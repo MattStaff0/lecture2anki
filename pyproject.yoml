@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lecture2anki"
+version = "0.1.0"
+description = "Transcribe lectures and generate Anki flashcards using local AI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Matt" }
+]
+keywords = ["anki", "flashcards", "transcription", "whisper", "ollama", "education"]
+
+dependencies = [
+    "faster-whisper>=1.0.0",      # Local transcription
+    "ollama>=0.2.0",               # Ollama Python client
+    "requests>=2.31.0",            # HTTP for AnkiConnect
+    "python-dotenv>=1.0.0",        # Environment variables
+    "click>=8.1.0",                # CLI framework
+    "rich>=13.0.0",                # Pretty terminal output
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",           # Coverage reports
+    "ruff>=0.3.0",                 # Fast linter + formatter
+    "mypy>=1.9.0",                 # Type checking
+]
+
+[project.scripts]
+lecture2anki = "src.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+# Ruff (linter + formatter)
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+]
+ignore = ["E501"]  # line too long (handled by formatter)
+
+# Type checking
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
