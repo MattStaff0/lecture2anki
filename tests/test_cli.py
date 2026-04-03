@@ -1,8 +1,10 @@
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
 
+import src.cli as cli_module
 from src.cli import main
 from src.config import reset_config
 from src.db import create_course, create_lecture, create_unit, init_db
@@ -137,3 +139,46 @@ class TestLectures:
         assert result.exit_code == 0
         assert "Intro to ML" in result.output
         assert "Scheduling" not in result.output
+
+
+class TestRecord:
+    def test_record_command_resolves_course_and_unit(self, runner, tmp_path, monkeypatch):
+        database_path = tmp_path / "lecture2anki.db"
+        conn = sqlite3.connect(database_path)
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        conn.close()
+
+        def fake_record_lecture(conn, unit_id, title=None, duration_limit=None):
+            assert unit_id == unit.id
+            assert title == "Intro to ML"
+            assert duration_limit == 30.0
+            return SimpleNamespace(
+                audio_path=tmp_path / "recordings" / "lecture-1.wav",
+                lecture=SimpleNamespace(id=1),
+                duration_seconds=12.5,
+            )
+
+        monkeypatch.setattr(cli_module, "record_lecture", fake_record_lecture)
+
+        result = runner.invoke(
+            main,
+            [
+                "--database-path",
+                str(database_path),
+                "record",
+                "--course",
+                "AI",
+                "--unit",
+                "Midterm 1",
+                "--title",
+                "Intro to ML",
+                "--duration-limit",
+                "30",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Recording lecture for AI / Midterm 1" in result.output
+        assert "Saved recording to" in result.output

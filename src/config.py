@@ -148,6 +148,14 @@ def get_database_path() -> Path:
     return get_config().storage.database_path
 
 
+def get_recordings_path() -> Path:
+    """Get the directory used for persisted recordings."""
+    config = get_config()
+    if config.storage.recordings_path is not None:
+        return config.storage.recordings_path
+    return config.storage.database_path.parent / "recordings"
+
+
 def get_deck_path(course_name: str, unit_name: str) -> str:
     """Get the full deck path for a course and unit."""
     return get_config().anki.get_deck_path(course_name, unit_name)

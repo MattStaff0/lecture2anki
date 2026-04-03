@@ -13,10 +13,11 @@ from src.db import (
     create_unit,
     get_course_by_name,
     get_courses,
-    get_lectures_for_unit,
+    get_unit_by_name,
     get_units_for_course,
     init_db,
 )
+from src.recorder import record_lecture
 
 
 def _connect(database_path: Path | None = None) -> tuple[sqlite3.Connection, Path]:
@@ -34,6 +35,14 @@ def _course_or_exit(conn: sqlite3.Connection, course_name: str):
     if course is None:
         raise click.ClickException(f"Course not found: {course_name}")
     return course
+
+
+def _unit_or_exit(conn: sqlite3.Connection, course_id: int, unit_name: str):
+    """Return a unit or exit with a usage error."""
+    unit = get_unit_by_name(conn, course_id, unit_name)
+    if unit is None:
+        raise click.ClickException(f"Unit not found: {unit_name}")
+    return unit
 
 
 @click.group()
@@ -172,6 +181,43 @@ def list_lectures(ctx: click.Context, course_name: str | None, unit_name: str | 
 
     for lecture_id, title, unit, course, recorded_at in rows:
         click.echo(f"{lecture_id}: {course} / {unit} / {title} ({recorded_at})")
+
+
+@main.command("record")
+@click.option("--course", "course_name", required=True, help="Course name for the lecture.")
+@click.option("--unit", "unit_name", required=True, help="Unit name for the lecture.")
+@click.option("--title", default=None, help="Optional lecture title.")
+@click.option(
+    "--duration-limit",
+    type=float,
+    default=None,
+    help="Optional auto-stop duration in seconds.",
+)
+@click.pass_context
+def record_command(
+    ctx: click.Context,
+    course_name: str,
+    unit_name: str,
+    title: str | None,
+    duration_limit: float | None,
+) -> None:
+    """Record audio for a lecture and save it locally."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        course = _course_or_exit(conn, course_name)
+        unit = _unit_or_exit(conn, course.id, unit_name)
+        click.echo(f"Recording lecture for {course.name} / {unit.name}")
+        result = record_lecture(
+            conn,
+            unit.id,
+            title=title,
+            duration_limit=duration_limit,
+        )
+    finally:
+        conn.close()
+
+    click.echo(f"Saved recording to {result.audio_path}")
+    click.echo(f"Lecture {result.lecture.id} duration: {result.duration_seconds:.1f}s")
 
 
 if __name__ == "__main__":

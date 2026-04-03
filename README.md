@@ -195,6 +195,7 @@ See `.env.example` for all options with detailed comments.
 lecture2anki/
 ├── src/
 │   ├── config.py          # Environment-backed settings
+│   ├── recorder.py        # Microphone recording workflow
 │   ├── db.py              # Database operations
 │   ├── models.py          # Data models
 │   ├── transcriber.py     # Whisper integration

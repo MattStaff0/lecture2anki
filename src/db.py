@@ -221,6 +221,17 @@ def get_lecture_by_id(conn: sqlite3.Connection, lecture_id: int) -> Lecture | No
     )
 
 
+def update_lecture_duration(
+    conn: sqlite3.Connection, lecture_id: int, duration_seconds: float
+) -> None:
+    """Update the recorded duration for a lecture."""
+    conn.execute(
+        "UPDATE lectures SET duration_seconds = ? WHERE id = ?",
+        (duration_seconds, lecture_id),
+    )
+    conn.commit()
+
+
 # --- Segments ---
 
 
