@@ -314,6 +314,12 @@ def get_cards_for_lecture(conn: sqlite3.Connection, lecture_id: int) -> list[Car
     return [_row_to_card(r) for r in rows]
 
 
+def delete_cards_for_lecture(conn: sqlite3.Connection, lecture_id: int) -> None:
+    """Delete all generated cards for a lecture."""
+    conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lecture_id,))
+    conn.commit()
+
+
 def get_unsynced_cards(conn: sqlite3.Connection) -> list[Card]:
     """Get all cards not yet synced to Anki."""
     rows = conn.execute(

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from src.card_generator import generate_cards_for_lecture
 from src.config import get_database_path
 from src.db import (
     create_course,
@@ -233,6 +234,20 @@ def transcribe_command(ctx: click.Context, lecture_id: int) -> None:
         conn.close()
 
     click.echo(f"Stored {len(segments)} segments for lecture {lecture_id}")
+
+
+@main.command("generate")
+@click.argument("lecture_id", type=int)
+@click.pass_context
+def generate_command(ctx: click.Context, lecture_id: int) -> None:
+    """Generate flashcards from transcript segments."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        cards = generate_cards_for_lecture(conn, lecture_id)
+    finally:
+        conn.close()
+
+    click.echo(f"Generated {len(cards)} cards for lecture {lecture_id}")
 
 
 if __name__ == "__main__":
