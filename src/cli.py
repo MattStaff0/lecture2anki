@@ -18,6 +18,7 @@ from src.db import (
     init_db,
 )
 from src.recorder import record_lecture
+from src.transcriber import transcribe_lecture
 
 
 def _connect(database_path: Path | None = None) -> tuple[sqlite3.Connection, Path]:
@@ -218,6 +219,20 @@ def record_command(
 
     click.echo(f"Saved recording to {result.audio_path}")
     click.echo(f"Lecture {result.lecture.id} duration: {result.duration_seconds:.1f}s")
+
+
+@main.command("transcribe")
+@click.argument("lecture_id", type=int)
+@click.pass_context
+def transcribe_command(ctx: click.Context, lecture_id: int) -> None:
+    """Transcribe a recorded lecture into timestamped segments."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        segments = transcribe_lecture(conn, lecture_id)
+    finally:
+        conn.close()
+
+    click.echo(f"Stored {len(segments)} segments for lecture {lecture_id}")
 
 
 if __name__ == "__main__":

@@ -273,6 +273,12 @@ def get_segments_for_lecture(
     ]
 
 
+def delete_segments_for_lecture(conn: sqlite3.Connection, lecture_id: int) -> None:
+    """Delete all transcript segments for a lecture."""
+    conn.execute("DELETE FROM segments WHERE lecture_id = ?", (lecture_id,))
+    conn.commit()
+
+
 # --- Cards ---
 
 

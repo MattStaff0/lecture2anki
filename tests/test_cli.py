@@ -182,3 +182,28 @@ class TestRecord:
         assert result.exit_code == 0
         assert "Recording lecture for AI / Midterm 1" in result.output
         assert "Saved recording to" in result.output
+
+
+class TestTranscribe:
+    def test_transcribe_command_stores_segments(self, runner, tmp_path, monkeypatch):
+        database_path = tmp_path / "lecture2anki.db"
+        conn = sqlite3.connect(database_path)
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        lecture = create_lecture(conn, unit.id, title="Intro to ML")
+        conn.close()
+
+        def fake_transcribe_lecture(conn, lecture_id):
+            assert lecture_id == lecture.id
+            return [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+
+        monkeypatch.setattr(cli_module, "transcribe_lecture", fake_transcribe_lecture)
+
+        result = runner.invoke(
+            main,
+            ["--database-path", str(database_path), "transcribe", str(lecture.id)],
+        )
+
+        assert result.exit_code == 0
+        assert "Stored 2 segments" in result.output
