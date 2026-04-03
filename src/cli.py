@@ -1,0 +1,178 @@
+"""Command-line interface for Lecture2Anki."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import click
+
+from src.config import get_database_path
+from src.db import (
+    create_course,
+    create_unit,
+    get_course_by_name,
+    get_courses,
+    get_lectures_for_unit,
+    get_units_for_course,
+    init_db,
+)
+
+
+def _connect(database_path: Path | None = None) -> tuple[sqlite3.Connection, Path]:
+    """Open the configured SQLite database and ensure the schema exists."""
+    path = database_path or get_database_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    init_db(conn)
+    return conn, path
+
+
+def _course_or_exit(conn: sqlite3.Connection, course_name: str):
+    """Return a course or exit with a usage error."""
+    course = get_course_by_name(conn, course_name)
+    if course is None:
+        raise click.ClickException(f"Course not found: {course_name}")
+    return course
+
+
+@click.group()
+@click.option(
+    "--database-path",
+    type=click.Path(path_type=Path, dir_okay=False, resolve_path=True),
+    default=None,
+    help="Override the SQLite database path.",
+)
+@click.pass_context
+def main(ctx: click.Context, database_path: Path | None) -> None:
+    """Manage local lecture transcription and Anki card generation."""
+    ctx.ensure_object(dict)
+    ctx.obj["database_path"] = database_path
+
+
+@main.command()
+@click.pass_context
+def init(ctx: click.Context) -> None:
+    """Create the database and initialize the schema."""
+    conn, path = _connect(ctx.obj["database_path"])
+    conn.close()
+    click.echo(f"Initialized database at {path}")
+
+
+@main.group()
+def courses() -> None:
+    """Manage courses."""
+
+
+@courses.command("list")
+@click.pass_context
+def list_courses(ctx: click.Context) -> None:
+    """List all configured courses."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        courses = get_courses(conn)
+    finally:
+        conn.close()
+
+    if not courses:
+        click.echo("No courses found.")
+        return
+
+    for course in courses:
+        click.echo(course.name)
+
+
+@courses.command("add")
+@click.argument("name")
+@click.pass_context
+def add_course(ctx: click.Context, name: str) -> None:
+    """Add a new course."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        course = create_course(conn, name)
+    except sqlite3.IntegrityError as exc:
+        conn.close()
+        raise click.ClickException(f"Course already exists: {name}") from exc
+    else:
+        conn.close()
+
+    click.echo(f"Added course {course.name} (id={course.id})")
+
+
+@main.group()
+def units() -> None:
+    """Manage units within courses."""
+
+
+@units.command("list")
+@click.argument("course_name")
+@click.pass_context
+def list_units(ctx: click.Context, course_name: str) -> None:
+    """List units for a course."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        course = _course_or_exit(conn, course_name)
+        units = get_units_for_course(conn, course.id)
+    finally:
+        conn.close()
+
+    if not units:
+        click.echo(f"No units found for {course.name}.")
+        return
+
+    for unit in units:
+        click.echo(f"{unit.sort_order}: {unit.name}")
+
+
+@units.command("add")
+@click.argument("course_name")
+@click.argument("unit_name")
+@click.option("--sort-order", default=0, show_default=True, type=int)
+@click.pass_context
+def add_unit(ctx: click.Context, course_name: str, unit_name: str, sort_order: int) -> None:
+    """Add a unit to a course."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        course = _course_or_exit(conn, course_name)
+        unit = create_unit(conn, course.id, unit_name, sort_order=sort_order)
+    except sqlite3.IntegrityError as exc:
+        conn.close()
+        raise click.ClickException(
+            f"Unit already exists for course {course_name}: {unit_name}"
+        ) from exc
+    else:
+        conn.close()
+
+    click.echo(f"Added unit {unit.name} to {course.name} (id={unit.id})")
+
+
+@main.command("lectures")
+@click.option("--course", "course_name", default=None, help="Filter lectures by course name.")
+@click.option("--unit", "unit_name", default=None, help="Filter lectures by unit name.")
+@click.pass_context
+def list_lectures(ctx: click.Context, course_name: str | None, unit_name: str | None) -> None:
+    """List saved lectures."""
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        rows = conn.execute(
+            "SELECT l.id, COALESCE(l.title, 'Untitled lecture'), u.name, c.name, l.recorded_at "
+            "FROM lectures l "
+            "JOIN units u ON l.unit_id = u.id "
+            "JOIN courses c ON u.course_id = c.id "
+            "WHERE (? IS NULL OR c.name = ?) AND (? IS NULL OR u.name = ?) "
+            "ORDER BY l.recorded_at DESC",
+            (course_name, course_name, unit_name, unit_name),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        click.echo("No lectures found.")
+        return
+
+    for lecture_id, title, unit, course, recorded_at in rows:
+        click.echo(f"{lecture_id}: {course} / {unit} / {title} ({recorded_at})")
+
+
+if __name__ == "__main__":
+    main()

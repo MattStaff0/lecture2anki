@@ -137,6 +137,12 @@ def get_config() -> Config:
     return _config
 
 
+def reset_config() -> None:
+    """Clear the cached config so tests can reload environment overrides."""
+    global _config
+    _config = None
+
+
 def get_database_path() -> Path:
     """Get the configured SQLite database path."""
     return get_config().storage.database_path
