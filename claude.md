@@ -145,6 +145,7 @@ lecture2anki units add "AI" "Final"  # Add Final unit to AI
 # Recording
 lecture2anki record                  # Interactive: select course → unit → record
 lecture2anki record --course AI --unit "Midterm 2"  # Direct
+lecture2anki web                     # Local browser UI for capture and transcription
 
 # Processing
 lecture2anki generate <lecture_id>   # Generate cards for a lecture

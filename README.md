@@ -93,6 +93,19 @@ lecture2anki record
 # Select your course and unit, then start recording!
 ```
 
+### Optional: use the local browser UI
+
+```bash
+lecture2anki web
+```
+
+Then open `http://127.0.0.1:8000` in your browser. The UI lets you:
+
+- create courses and units
+- record from your browser microphone and save audio locally
+- upload an existing lecture recording
+- transcribe saved lectures locally with Whisper
+
 ### 6. Generate cards and sync to Anki
 
 ```bash
@@ -115,6 +128,16 @@ lecture2anki record
 
 # Direct mode
 lecture2anki record --course "AI" --unit "Midterm 1"
+```
+
+### Local web UI
+
+```bash
+# Start the browser UI
+lecture2anki web
+
+# Use a custom port if needed
+lecture2anki web --port 8123
 ```
 
 ### Managing courses and units

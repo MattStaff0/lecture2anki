@@ -207,3 +207,39 @@ class TestTranscribe:
 
         assert result.exit_code == 0
         assert "Stored 2 segments" in result.output
+
+
+class TestWeb:
+    def test_web_command_starts_local_ui(self, runner, tmp_path, monkeypatch):
+        database_path = tmp_path / "lecture2anki.db"
+        started = {}
+
+        def fake_run_web_app(host, port, database_path=None):
+            started["host"] = host
+            started["port"] = port
+            started["database_path"] = database_path
+
+        import src.web as web_module
+
+        monkeypatch.setattr(web_module, "run_web_app", fake_run_web_app)
+
+        result = runner.invoke(
+            main,
+            [
+                "--database-path",
+                str(database_path),
+                "web",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8123",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Serving Lecture2Anki UI" in result.output
+        assert started == {
+            "host": "127.0.0.1",
+            "port": 8123,
+            "database_path": database_path,
+        }

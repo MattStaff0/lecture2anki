@@ -31,14 +31,19 @@ class RecordingResult:
 
     lecture: Lecture
     audio_path: Path
-    duration_seconds: float
+    duration_seconds: float | None
 
 
-def build_recording_path(lecture_id: int, recordings_dir: Path | None = None) -> Path:
+def build_recording_path(
+    lecture_id: int,
+    recordings_dir: Path | None = None,
+    suffix: str = ".wav",
+) -> Path:
     """Build a deterministic path for a lecture recording."""
     directory = recordings_dir or get_recordings_path()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return directory / f"lecture-{lecture_id}-{timestamp}.wav"
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return directory / f"lecture-{lecture_id}-{timestamp}{normalized_suffix}"
 
 
 def record_microphone_to_wav(
@@ -121,4 +126,33 @@ def record_lecture(
         lecture=updated_lecture,
         audio_path=audio_path,
         duration_seconds=duration_seconds,
+    )
+
+
+def save_uploaded_audio(
+    conn,
+    unit_id: int,
+    audio_bytes: bytes,
+    suffix: str,
+    title: str | None = None,
+    recordings_dir: Path | None = None,
+    duration_seconds: float | None = None,
+) -> RecordingResult:
+    """Persist uploaded audio for a lecture and optionally store its duration."""
+    lecture = create_lecture(conn, unit_id, title=title)
+    audio_path = build_recording_path(lecture.id, recordings_dir=recordings_dir, suffix=suffix)
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(audio_bytes)
+
+    if duration_seconds is not None:
+        update_lecture_duration(conn, lecture.id, duration_seconds)
+
+    updated_lecture = get_lecture_by_id(conn, lecture.id)
+    if updated_lecture is None:
+        raise RuntimeError(f"Lecture {lecture.id} disappeared after saving audio.")
+
+    return RecordingResult(
+        lecture=updated_lecture,
+        audio_path=audio_path,
+        duration_seconds=updated_lecture.duration_seconds,
     )

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Lecture2Anki</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <p class="eyebrow">Lecture2Anki</p>
+        <h1>Capture lectures in the browser, transcribe locally, keep everything on your machine.</h1>
+        <p class="lede">
+          This UI sits on top of your local SQLite database and your local Whisper runtime.
+          Record from the browser or upload audio, then transcribe each lecture into segments.
+        </p>
+        <div class="hero-actions">
+          <span class="status-pill" id="status-pill">Idle</span>
+          <a class="ghost-link" href="#capture-panel">Jump to capture</a>
+        </div>
+      </header>
+
+      <main class="grid">
+        <section class="panel panel-accent" id="setup-panel">
+          <div class="panel-head">
+            <p class="kicker">Setup</p>
+            <h2>Courses and units</h2>
+          </div>
+
+          <form id="course-form" class="stack-form">
+            <label>
+              <span>New course</span>
+              <input id="course-name" name="name" type="text" placeholder="AI" required>
+            </label>
+            <button type="submit">Add course</button>
+          </form>
+
+          <form id="unit-form" class="stack-form">
+            <label>
+              <span>Course</span>
+              <select id="unit-course" name="course_id" required></select>
+            </label>
+            <label>
+              <span>New unit</span>
+              <input id="unit-name" name="name" type="text" placeholder="Midterm 1" required>
+            </label>
+            <label>
+              <span>Sort order</span>
+              <input id="unit-sort-order" name="sort_order" type="number" value="0">
+            </label>
+            <button type="submit">Add unit</button>
+          </form>
+
+          <div id="course-list" class="course-list"></div>
+        </section>
+
+        <section class="panel" id="capture-panel">
+          <div class="panel-head">
+            <p class="kicker">Capture</p>
+            <h2>Record or upload a lecture</h2>
+          </div>
+
+          <form id="recording-form" class="stack-form">
+            <label>
+              <span>Lecture unit</span>
+              <select id="recording-unit" name="unit_id" required></select>
+            </label>
+            <label>
+              <span>Lecture title</span>
+              <input id="recording-title" name="title" type="text" placeholder="Intro to ML">
+            </label>
+
+            <div class="record-controls">
+              <button type="button" id="record-start">Start browser recording</button>
+              <button type="button" id="record-stop" class="button-muted" disabled>Stop and save</button>
+            </div>
+            <p class="hint">
+              Browser recording uses your mic permission and uploads the audio into your local
+              Lecture2Anki recordings folder. If recording is unavailable, use file upload below.
+            </p>
+          </form>
+
+          <form id="upload-form" class="stack-form upload-form">
+            <label>
+              <span>Upload audio file</span>
+              <input id="upload-audio" name="audio" type="file" accept="audio/*,video/webm,video/mp4" required>
+            </label>
+            <button type="submit">Upload existing recording</button>
+          </form>
+        </section>
+
+        <section class="panel panel-wide">
+          <div class="panel-head">
+            <p class="kicker">Lecture Log</p>
+            <h2>Saved lectures</h2>
+          </div>
+          <div id="lecture-list" class="lecture-list"></div>
+        </section>
+
+        <section class="panel panel-wide transcript-panel">
+          <div class="panel-head">
+            <p class="kicker">Transcript</p>
+            <h2>Segments</h2>
+          </div>
+          <div id="transcript-empty" class="empty-state">
+            Pick a lecture to inspect its saved transcript segments.
+          </div>
+          <div id="transcript-view" class="transcript-view"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

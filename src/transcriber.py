@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 from src.config import get_config, get_recordings_path
 from src.db import add_segment, delete_segments_for_lecture, get_lecture_by_id
@@ -31,7 +31,11 @@ TranscriberBackend = Callable[[Path], list[TranscriptSegment]]
 def find_recording_for_lecture(lecture_id: int, recordings_dir: Path | None = None) -> Path:
     """Locate the most recent saved recording for a lecture."""
     directory = recordings_dir or get_recordings_path()
-    candidates = sorted(directory.glob(f"lecture-{lecture_id}-*.wav"))
+    candidates = sorted(
+        path
+        for path in directory.glob(f"lecture-{lecture_id}-*")
+        if path.is_file()
+    )
     if not candidates:
         raise FileNotFoundError(f"No recording found for lecture {lecture_id}")
     return candidates[-1]

@@ -235,5 +235,17 @@ def transcribe_command(ctx: click.Context, lecture_id: int) -> None:
     click.echo(f"Stored {len(segments)} segments for lecture {lecture_id}")
 
 
+@main.command("web")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host for the local web UI.")
+@click.option("--port", default=8000, show_default=True, type=int, help="Port for the local web UI.")
+@click.pass_context
+def web_command(ctx: click.Context, host: str, port: int) -> None:
+    """Run the local browser UI."""
+    from src.web import run_web_app
+
+    click.echo(f"Serving Lecture2Anki UI at http://{host}:{port}")
+    run_web_app(host=host, port=port, database_path=ctx.obj["database_path"])
+
+
 if __name__ == "__main__":
     main()

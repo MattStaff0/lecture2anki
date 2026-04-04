@@ -14,7 +14,7 @@ from src.transcriber import TranscriptSegment, find_recording_for_lecture, trans
 class TestTranscriber:
     def test_find_recording_for_lecture_returns_latest_match(self, tmp_path):
         first = tmp_path / "lecture-7-20260101-100000.wav"
-        second = tmp_path / "lecture-7-20260101-110000.wav"
+        second = tmp_path / "lecture-7-20260101-110000.webm"
         first.write_bytes(b"1")
         second.write_bytes(b"2")
 
