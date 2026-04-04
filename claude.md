@@ -176,6 +176,7 @@ lecture2anki lectures                # List recent lectures
 lecture2anki/
 ├── src/
 │   ├── __init__.py
+│   ├── config.py           # Environment-backed settings
 │   ├── db.py               # SQLite operations (courses, units, lectures, segments, cards)
 │   ├── models.py           # Dataclasses for Course, Unit, Lecture, Segment, Card
 │   ├── transcriber.py      # faster-whisper integration
@@ -195,7 +196,7 @@ lecture2anki/
 │   └── fixtures/
 │       ├── sample_transcript.json
 │       └── sample_audio.wav
-├── CLAUDE.md
+├── claude.md
 ├── README.md
 ├── pyproject.toml
 ├── .gitignore

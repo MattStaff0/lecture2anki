@@ -194,6 +194,7 @@ See `.env.example` for all options with detailed comments.
 ```
 lecture2anki/
 ├── src/
+│   ├── config.py          # Environment-backed settings
 │   ├── db.py              # Database operations
 │   ├── models.py          # Data models
 │   ├── transcriber.py     # Whisper integration
@@ -203,7 +204,7 @@ lecture2anki/
 │   ├── anki_client.py     # AnkiConnect client
 │   └── cli.py             # Command-line interface
 ├── tests/                 # Test suite
-├── CLAUDE.md              # AI assistant context
+├── claude.md              # AI assistant context
 ├── .env.example           # Configuration template
 └── pyproject.toml         # Project config
 ```
@@ -218,7 +219,7 @@ Contributions are welcome! This project follows TDD practices.
 4. Run tests: `pytest`
 5. Submit a PR
 
-See [CLAUDE.md](CLAUDE.md) for coding conventions and architecture details.
+See [claude.md](claude.md) for coding conventions and architecture details.
 
 ## 🐛 Troubleshooting
 
