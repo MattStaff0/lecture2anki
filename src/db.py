@@ -95,6 +95,17 @@ def get_course_by_id(conn: sqlite3.Connection, course_id: int) -> Course | None:
     return Course(id=row[0], name=row[1], created_at=_parse_datetime(row[2]))
 
 
+def get_course_by_name(conn: sqlite3.Connection, name: str) -> Course | None:
+    """Get a course by name, or None if not found."""
+    row = conn.execute(
+        "SELECT id, name, created_at FROM courses WHERE name = ?",
+        (name,),
+    ).fetchone()
+    if row is None:
+        return None
+    return Course(id=row[0], name=row[1], created_at=_parse_datetime(row[2]))
+
+
 # --- Units ---
 
 
@@ -134,6 +145,24 @@ def get_units_for_course(conn: sqlite3.Connection, course_id: int) -> list[Unit]
         )
         for r in rows
     ]
+
+
+def get_unit_by_name(conn: sqlite3.Connection, course_id: int, name: str) -> Unit | None:
+    """Get a unit by course and name, or None if not found."""
+    row = conn.execute(
+        "SELECT id, course_id, name, sort_order, created_at "
+        "FROM units WHERE course_id = ? AND name = ?",
+        (course_id, name),
+    ).fetchone()
+    if row is None:
+        return None
+    return Unit(
+        id=row[0],
+        course_id=row[1],
+        name=row[2],
+        sort_order=row[3],
+        created_at=_parse_datetime(row[4]),
+    )
 
 
 # --- Lectures ---
@@ -190,6 +219,17 @@ def get_lecture_by_id(conn: sqlite3.Connection, lecture_id: int) -> Lecture | No
         id=row[0], unit_id=row[1], title=row[2],
         recorded_at=_parse_datetime(row[3]), duration_seconds=row[4],
     )
+
+
+def update_lecture_duration(
+    conn: sqlite3.Connection, lecture_id: int, duration_seconds: float
+) -> None:
+    """Update the recorded duration for a lecture."""
+    conn.execute(
+        "UPDATE lectures SET duration_seconds = ? WHERE id = ?",
+        (duration_seconds, lecture_id),
+    )
+    conn.commit()
 
 
 # --- Segments ---
