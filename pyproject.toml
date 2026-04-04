@@ -15,20 +15,22 @@ authors = [
 keywords = ["anki", "flashcards", "transcription", "whisper", "ollama", "education"]
 
 dependencies = [
-    "faster-whisper>=1.0.0",      # Local transcription
-    "ollama>=0.2.0",               # Ollama Python client
-    "requests>=2.31.0",            # HTTP for AnkiConnect
-    "python-dotenv>=1.0.0",        # Environment variables
-    "click>=8.1.0",                # CLI framework
-    "rich>=13.0.0",                # Pretty terminal output
+    "faster-whisper>=1.0.0",
+    "ollama>=0.2.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "sounddevice>=0.5.0",
+    "soundfile>=0.13.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
-    "pytest-cov>=4.1.0",           # Coverage reports
-    "ruff>=0.3.0",                 # Fast linter + formatter
-    "mypy>=1.9.0",                 # Type checking
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
 ]
 
 [project.scripts]
@@ -37,30 +39,27 @@ lecture2anki = "src.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
-# Pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 
-# Ruff (linter + formatter)
 [tool.ruff]
 target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
 select = [
-    "E",    # pycodestyle errors
-    "W",    # pycodestyle warnings
-    "F",    # pyflakes
-    "I",    # isort
-    "B",    # flake8-bugbear
-    "UP",   # pyupgrade
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "UP",
 ]
-ignore = ["E501"]  # line too long (handled by formatter)
+ignore = ["E501"]
 
-# Type checking
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = true
