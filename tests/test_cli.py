@@ -207,3 +207,28 @@ class TestTranscribe:
 
         assert result.exit_code == 0
         assert "Stored 2 segments" in result.output
+
+
+class TestGenerate:
+    def test_generate_command_reports_generated_cards(self, runner, tmp_path, monkeypatch):
+        database_path = tmp_path / "lecture2anki.db"
+        conn = sqlite3.connect(database_path)
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        lecture = create_lecture(conn, unit.id, title="Intro to ML")
+        conn.close()
+
+        def fake_generate_cards_for_lecture(conn, lecture_id):
+            assert lecture_id == lecture.id
+            return [SimpleNamespace(id=1), SimpleNamespace(id=2), SimpleNamespace(id=3)]
+
+        monkeypatch.setattr(cli_module, "generate_cards_for_lecture", fake_generate_cards_for_lecture)
+
+        result = runner.invoke(
+            main,
+            ["--database-path", str(database_path), "generate", str(lecture.id)],
+        )
+
+        assert result.exit_code == 0
+        assert "Generated 3 cards" in result.output
