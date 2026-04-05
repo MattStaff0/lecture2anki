@@ -196,7 +196,7 @@ lecture2anki/
 │   ├── web_static/        # HTML/CSS/JS frontend
 │   └── cli.py             # Click CLI
 ├── tests/                 # Test suite (103 tests)
-├── CLAUDE.md              # AI assistant context
+├── claude.md              # AI assistant context
 ├── .env.example           # Configuration template
 └── pyproject.toml         # Project config
 ```
@@ -222,7 +222,7 @@ Contributions are welcome! This project follows TDD practices.
 4. Run tests: `pytest`
 5. Submit a PR
 
-See [CLAUDE.md](CLAUDE.md) for coding conventions and architecture details.
+See [claude.md](claude.md) for coding conventions and architecture details.
 
 ## Troubleshooting
 
