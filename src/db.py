@@ -46,6 +46,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             front TEXT NOT NULL,
             back TEXT NOT NULL,
             tags TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
             synced_to_anki BOOLEAN DEFAULT FALSE,
             anki_note_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -282,23 +283,28 @@ def delete_segments_for_lecture(conn: sqlite3.Connection, lecture_id: int) -> No
 # --- Cards ---
 
 
+_CARD_COLS = (
+    "id, lecture_id, front, back, tags, status, synced_to_anki, anki_note_id, created_at"
+)
+
+
 def create_card(
     conn: sqlite3.Connection,
     lecture_id: int,
     front: str,
     back: str,
     tags: list[str],
+    status: str = "pending",
 ) -> Card:
     """Create a flashcard for a lecture."""
     tags_json = json.dumps(tags)
     cursor = conn.execute(
-        "INSERT INTO cards (lecture_id, front, back, tags) VALUES (?, ?, ?, ?)",
-        (lecture_id, front, back, tags_json),
+        "INSERT INTO cards (lecture_id, front, back, tags, status) VALUES (?, ?, ?, ?, ?)",
+        (lecture_id, front, back, tags_json, status),
     )
     conn.commit()
     row = conn.execute(
-        "SELECT id, lecture_id, front, back, tags, synced_to_anki, "
-        "anki_note_id, created_at FROM cards WHERE id = ?",
+        f"SELECT {_CARD_COLS} FROM cards WHERE id = ?",
         (cursor.lastrowid,),
     ).fetchone()
     return _row_to_card(row)
@@ -307,9 +313,19 @@ def create_card(
 def get_cards_for_lecture(conn: sqlite3.Connection, lecture_id: int) -> list[Card]:
     """Get all cards for a lecture."""
     rows = conn.execute(
-        "SELECT id, lecture_id, front, back, tags, synced_to_anki, "
-        "anki_note_id, created_at FROM cards WHERE lecture_id = ?",
+        f"SELECT {_CARD_COLS} FROM cards WHERE lecture_id = ?",
         (lecture_id,),
+    ).fetchall()
+    return [_row_to_card(r) for r in rows]
+
+
+def get_cards_for_lecture_by_status(
+    conn: sqlite3.Connection, lecture_id: int, status: str
+) -> list[Card]:
+    """Get cards for a lecture filtered by status."""
+    rows = conn.execute(
+        f"SELECT {_CARD_COLS} FROM cards WHERE lecture_id = ? AND status = ?",
+        (lecture_id, status),
     ).fetchall()
     return [_row_to_card(r) for r in rows]
 
@@ -317,10 +333,47 @@ def get_cards_for_lecture(conn: sqlite3.Connection, lecture_id: int) -> list[Car
 def get_unsynced_cards(conn: sqlite3.Connection) -> list[Card]:
     """Get all cards not yet synced to Anki."""
     rows = conn.execute(
-        "SELECT id, lecture_id, front, back, tags, synced_to_anki, "
-        "anki_note_id, created_at FROM cards WHERE synced_to_anki = 0",
+        f"SELECT {_CARD_COLS} FROM cards WHERE synced_to_anki = 0",
     ).fetchall()
     return [_row_to_card(r) for r in rows]
+
+
+def get_approved_unsynced_cards_for_lecture(
+    conn: sqlite3.Connection, lecture_id: int
+) -> list[Card]:
+    """Get approved cards for a lecture that haven't been synced to Anki."""
+    rows = conn.execute(
+        f"SELECT {_CARD_COLS} FROM cards "
+        "WHERE lecture_id = ? AND status = 'approved' AND synced_to_anki = 0",
+        (lecture_id,),
+    ).fetchall()
+    return [_row_to_card(r) for r in rows]
+
+
+def approve_card(conn: sqlite3.Connection, card_id: int) -> Card | None:
+    """Set a card's status to approved. Returns the updated card or None if not found."""
+    conn.execute("UPDATE cards SET status = 'approved' WHERE id = ?", (card_id,))
+    conn.commit()
+    row = conn.execute(
+        f"SELECT {_CARD_COLS} FROM cards WHERE id = ?", (card_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_card(row)
+
+
+def delete_card(conn: sqlite3.Connection, card_id: int) -> bool:
+    """Delete a card. Returns True if a row was deleted."""
+    cursor = conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def delete_cards_for_lecture(conn: sqlite3.Connection, lecture_id: int) -> int:
+    """Delete all cards for a lecture. Returns number of rows deleted."""
+    cursor = conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lecture_id,))
+    conn.commit()
+    return cursor.rowcount
 
 
 def mark_card_synced(
@@ -334,6 +387,16 @@ def mark_card_synced(
     conn.commit()
 
 
+def get_card_by_id(conn: sqlite3.Connection, card_id: int) -> Card | None:
+    """Get a card by ID, or None if not found."""
+    row = conn.execute(
+        f"SELECT {_CARD_COLS} FROM cards WHERE id = ?", (card_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_card(row)
+
+
 def _row_to_card(row: tuple) -> Card:
     """Convert a database row to a Card dataclass."""
     return Card(
@@ -342,9 +405,10 @@ def _row_to_card(row: tuple) -> Card:
         front=row[2],
         back=row[3],
         tags=json.loads(row[4]) if row[4] else [],
-        synced_to_anki=bool(row[5]),
-        anki_note_id=row[6],
-        created_at=_parse_datetime(row[7]),
+        status=row[5],
+        synced_to_anki=bool(row[6]),
+        anki_note_id=row[7],
+        created_at=_parse_datetime(row[8]),
     )
 
 

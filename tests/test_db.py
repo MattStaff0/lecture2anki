@@ -5,11 +5,17 @@ import pytest
 
 from src.db import (
     add_segment,
+    approve_card,
     create_card,
     create_course,
     create_lecture,
     create_unit,
+    delete_card,
+    delete_cards_for_lecture,
+    get_approved_unsynced_cards_for_lecture,
+    get_card_by_id,
     get_cards_for_lecture,
+    get_cards_for_lecture_by_status,
     get_course_by_id,
     get_courses,
     get_deck_path_for_lecture,
@@ -196,6 +202,7 @@ class TestCards:
         assert card.front == "What is ML?"
         assert card.back == "Machine learning is..."
         assert card.tags == ["ai", "ml"]
+        assert card.status == "pending"
         assert card.synced_to_anki is False
         assert card.anki_note_id is None
 
@@ -232,6 +239,87 @@ class TestCards:
         cards = get_cards_for_lecture(db, lecture.id)
         assert cards[0].synced_to_anki is True
         assert cards[0].anki_note_id == 12345
+
+    def test_approve_card(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        card = create_card(db, lecture.id, "Q1", "A1", ["tag1"])
+        assert card.status == "pending"
+
+        updated = approve_card(db, card.id)
+        assert updated is not None
+        assert updated.status == "approved"
+
+    def test_approve_card_not_found(self, db):
+        result = approve_card(db, 999)
+        assert result is None
+
+    def test_delete_card(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        card = create_card(db, lecture.id, "Q1", "A1", [])
+        assert delete_card(db, card.id) is True
+        assert get_card_by_id(db, card.id) is None
+
+    def test_delete_card_not_found(self, db):
+        assert delete_card(db, 999) is False
+
+    def test_delete_cards_for_lecture(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        create_card(db, lecture.id, "Q1", "A1", [])
+        create_card(db, lecture.id, "Q2", "A2", [])
+
+        deleted = delete_cards_for_lecture(db, lecture.id)
+        assert deleted == 2
+        assert get_cards_for_lecture(db, lecture.id) == []
+
+    def test_get_cards_for_lecture_by_status(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        create_card(db, lecture.id, "Q1", "A1", [])
+        card2 = create_card(db, lecture.id, "Q2", "A2", [])
+        approve_card(db, card2.id)
+
+        pending = get_cards_for_lecture_by_status(db, lecture.id, "pending")
+        approved = get_cards_for_lecture_by_status(db, lecture.id, "approved")
+        assert len(pending) == 1
+        assert len(approved) == 1
+        assert approved[0].front == "Q2"
+
+    def test_get_approved_unsynced_cards_for_lecture(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        # pending card — not eligible
+        create_card(db, lecture.id, "Q1", "A1", [])
+        # approved + unsynced — eligible
+        card2 = create_card(db, lecture.id, "Q2", "A2", [])
+        approve_card(db, card2.id)
+        # approved + synced — not eligible
+        card3 = create_card(db, lecture.id, "Q3", "A3", [])
+        approve_card(db, card3.id)
+        mark_card_synced(db, card3.id, anki_note_id=99)
+
+        eligible = get_approved_unsynced_cards_for_lecture(db, lecture.id)
+        assert len(eligible) == 1
+        assert eligible[0].front == "Q2"
+
+    def test_get_card_by_id(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        card = create_card(db, lecture.id, "Q1", "A1", ["t"])
+        fetched = get_card_by_id(db, card.id)
+        assert fetched is not None
+        assert fetched.front == "Q1"
+
+    def test_get_card_by_id_not_found(self, db):
+        assert get_card_by_id(db, 999) is None
 
 
 # --- Helpers ---
