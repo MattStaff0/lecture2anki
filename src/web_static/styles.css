@@ -333,6 +333,23 @@ button:disabled {
   color: var(--success);
 }
 
+.lecture-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.cards-batch-actions {
+  margin-bottom: 14px;
+}
+
+.cards-batch-actions button {
+  background: var(--success);
+}
+
+.cards-batch-actions button:hover:not(:disabled) {
+  background: #245633;
+}
+
 .button-danger {
   background: #913b2b;
 }
