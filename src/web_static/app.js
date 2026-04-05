@@ -7,6 +7,7 @@ const state = {
   audioChunks: [],
   startedAt: null,
   activeCards: [],
+  busyLectures: new Set(),
 };
 
 const elements = {
@@ -169,8 +170,10 @@ function renderLectures() {
   }
   elements.lectureList.innerHTML = state.lectures
     .map(
-      (lec) => `
-        <article class="lecture-card">
+      (lec) => {
+        const busy = state.busyLectures.has(lec.id);
+        return `
+        <article class="lecture-card${busy ? " lecture-busy" : ""}">
           <div>
             <h3>${escapeHtml(lec.title)}</h3>
             <p>${escapeHtml(lec.course_name)} / ${escapeHtml(lec.unit_name)}</p>
@@ -182,17 +185,18 @@ function renderLectures() {
           </div>
           <div class="lecture-actions">
             <button type="button" data-action="transcribe" data-lecture-id="${lec.id}"
-              ${!lec.has_recording ? "disabled" : ""}>Transcribe</button>
+              ${!lec.has_recording || busy ? "disabled" : ""}>Transcribe</button>
             <button type="button" class="button-muted" data-action="segments" data-lecture-id="${lec.id}"
               ${lec.segment_count === 0 ? "disabled" : ""}>View transcript</button>
             <button type="button" data-action="generate" data-lecture-id="${lec.id}"
-              ${lec.segment_count === 0 ? "disabled" : ""}>Generate cards</button>
+              ${lec.segment_count === 0 || busy ? "disabled" : ""}>Generate cards</button>
             <button type="button" class="button-muted" data-action="cards" data-lecture-id="${lec.id}"
               ${lec.card_count === 0 ? "disabled" : ""}>Review cards</button>
             <button type="button" data-action="sync" data-lecture-id="${lec.id}"
-              ${lec.approved_count === 0 || lec.approved_count === lec.synced_count ? "disabled" : ""}>Sync to Anki</button>
+              ${lec.approved_count === 0 || lec.approved_count === lec.synced_count || busy ? "disabled" : ""}>Sync to Anki</button>
           </div>
-        </article>`,
+        </article>`;
+      },
     )
     .join("");
 }
@@ -342,10 +346,13 @@ async function handleUpload(event) {
 // ---------------------------------------------------------------------------
 
 async function transcribeLecture(lectureId) {
+  state.busyLectures.add(lectureId);
+  render();
   setStatus(`Transcribing lecture ${lectureId}...`, "busy");
   const resp = await requestJson(`/api/lectures/${lectureId}/transcribe`, { method: "POST" });
   pollJob(resp.job_id, async (err) => {
-    if (err) return handleError(err);
+    state.busyLectures.delete(lectureId);
+    if (err) { render(); return handleError(err); }
     await loadBootstrap();
     await showTranscript(lectureId);
     setStatus("Transcription complete");
@@ -370,6 +377,7 @@ async function showTranscript(lectureId) {
   }
 
   elements.transcriptEmpty.style.display = "none";
+  document.querySelector(".transcript-panel").scrollIntoView({ behavior: "smooth", block: "start" });
   elements.transcriptView.innerHTML = payload.segments
     .map(
       (s) => `
@@ -387,10 +395,13 @@ async function showTranscript(lectureId) {
 // ---------------------------------------------------------------------------
 
 async function generateCards(lectureId) {
+  state.busyLectures.add(lectureId);
+  render();
   setStatus(`Generating cards for lecture ${lectureId}...`, "busy");
   const resp = await requestJson(`/api/lectures/${lectureId}/generate`, { method: "POST" });
   pollJob(resp.job_id, async (err) => {
-    if (err) return handleError(err);
+    state.busyLectures.delete(lectureId);
+    if (err) { render(); return handleError(err); }
     await loadBootstrap();
     await showCards(lectureId);
     setStatus("Card generation complete");
@@ -417,11 +428,16 @@ async function showCards(lectureId) {
 
   elements.cardsEmpty.style.display = "none";
   renderCards();
+  document.getElementById("cards-panel").scrollIntoView({ behavior: "smooth", block: "start" });
   setStatus(`Loaded ${payload.cards.length} cards`);
 }
 
 function renderCards() {
-  elements.cardsView.innerHTML = state.activeCards
+  const pendingCards = state.activeCards.filter((c) => c.status === "pending");
+  const approveAllHtml = pendingCards.length > 1
+    ? `<div class="cards-batch-actions"><button type="button" id="approve-all-btn">Approve all ${pendingCards.length} pending</button></div>`
+    : "";
+  elements.cardsView.innerHTML = approveAllHtml + state.activeCards
     .map(
       (c) => `
         <article class="card-review ${c.status === 'approved' ? 'card-approved' : ''} ${c.synced_to_anki ? 'card-synced' : ''}">
@@ -451,6 +467,19 @@ async function approveCard(cardId) {
   setStatus("Card approved");
 }
 
+async function approveAllPending() {
+  const pending = state.activeCards.filter((c) => c.status === "pending");
+  if (!pending.length) return;
+  setStatus(`Approving ${pending.length} cards...`, "busy");
+  for (const card of pending) {
+    await requestJson(`/api/cards/${card.id}/approve`, { method: "POST" });
+    card.status = "approved";
+  }
+  renderCards();
+  await loadBootstrap();
+  setStatus(`Approved ${pending.length} cards`);
+}
+
 async function rejectCard(cardId) {
   await requestJson(`/api/cards/${cardId}`, { method: "DELETE" });
   state.activeCards = state.activeCards.filter((c) => c.id !== cardId);
@@ -464,10 +493,13 @@ async function rejectCard(cardId) {
 // ---------------------------------------------------------------------------
 
 async function syncLecture(lectureId) {
+  state.busyLectures.add(lectureId);
+  render();
   setStatus(`Syncing lecture ${lectureId} to Anki...`, "busy");
   const resp = await requestJson(`/api/lectures/${lectureId}/sync`, { method: "POST" });
   pollJob(resp.job_id, async (err, job) => {
-    if (err) return handleError(err);
+    state.busyLectures.delete(lectureId);
+    if (err) { render(); return handleError(err); }
     await loadBootstrap();
     if (state.activeLectureId === lectureId) await showCards(lectureId);
     const r = job.result || {};
@@ -502,6 +534,7 @@ function attachEvents() {
   elements.cardsView.addEventListener("click", (e) => {
     const target = e.target;
     if (!(target instanceof HTMLElement)) return;
+    if (target.id === "approve-all-btn") return approveAllPending().catch(handleError);
     const action = target.dataset.cardAction;
     const cardId = Number(target.dataset.cardId);
     if (!action || !cardId) return;
