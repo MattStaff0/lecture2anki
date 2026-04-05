@@ -1,4 +1,4 @@
-# 🎓 Lecture2Anki
+# Lecture2Anki
 
 > Turn your lectures into Anki flashcards automatically — 100% local, no cloud APIs.
 
@@ -8,232 +8,202 @@
 
 Record your lectures, get AI-generated flashcards organized by course and exam. Everything runs locally on your machine — your data never leaves your laptop.
 
-## ✨ Features
+## Features
 
-- **🎤 Live transcription** — Records and transcribes lectures in real-time using Whisper
-- **🤖 AI-powered cards** — Generates high-quality flashcards using local LLMs via Ollama
-- **📚 Smart organization** — Cards automatically sorted by Course → Unit (Midterm 1, Final, etc.)
-- **🔗 Anki integration** — Syncs directly to Anki via AnkiConnect
-- **💻 Runs locally** — No internet required, no API costs, your data stays private
-- **⚡ Memory optimized** — Works on 8GB RAM MacBooks
+- **Live transcription** — Records and transcribes lectures using Whisper
+- **AI-powered cards** — Generates high-quality flashcards using local LLMs via Ollama
+- **Smart organization** — Cards automatically sorted by Course > Unit (Midterm 1, Final, etc.)
+- **Anki integration** — Syncs directly to Anki via AnkiConnect
+- **Browser UI** — Record, transcribe, generate, review, and sync from a local web app
+- **Card review** — Approve or reject generated cards before syncing
+- **Runs locally** — No internet required, no API costs, your data stays private
+- **Memory optimized** — Works on 8GB RAM MacBooks
 
-## 🎯 Who is this for?
+## Who is this for?
 
 - Students who want to study smarter, not harder
 - Anyone who learns from lectures, podcasts, or video courses
 - People who love Anki but hate making cards manually
 
-## 📋 Requirements
+## Requirements
 
 - **Python 3.10+**
-- **[Ollama](https://ollama.ai)** — Local LLM runtime
-- **[Anki](https://apps.ankiweb.net/)** with [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on
+- **[Ollama](https://ollama.ai)** — Local LLM runtime (for card generation)
+- **[Anki](https://apps.ankiweb.net/)** with [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on (for syncing)
 - **8GB+ RAM** (16GB recommended for faster processing)
 
-## 🚀 Quick Start
+## Quick Start
 
-### 1. Install dependencies
-
-```bash
-# Install Ollama
-brew install ollama  # macOS
-# See https://ollama.ai for other platforms
-
-# Start Ollama and download a model
-ollama serve  # keep running in a terminal
-ollama pull phi3  # ~2GB, good for 8GB RAM
-```
-
-### 2. Set up Anki
-
-1. Install [Anki](https://apps.ankiweb.net/)
-2. Go to **Tools → Add-ons → Get Add-ons**
-3. Enter code: `2055492159` (AnkiConnect)
-4. Restart Anki — keep it open while using Lecture2Anki
-
-### 3. Install Lecture2Anki
+### 1. Install Lecture2Anki
 
 ```bash
-# Clone the repo
 git clone https://github.com/MattStaff0/lecture2anki.git
 cd lecture2anki
 
-# Create virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install
 pip install -e ".[dev]"
 
-# Configure (edit .env with your preferences)
 cp .env.example .env
-
-# Initialize database
 lecture2anki init
 ```
 
-### 4. Set up your courses
+### 2. Install Whisper (transcription)
+
+faster-whisper is included as a Python dependency. On first use it will download the model you've configured. The default is `small` (~461MB).
+
+No extra install steps are needed — just make sure your `.env` has:
 
 ```bash
-# Add your courses
-lecture2anki courses add "AI"
-lecture2anki courses add "Operating Systems"
-lecture2anki courses add "Nutrition"
-
-# Add units (exam periods) to each course
-lecture2anki units add "AI" "Midterm 1"
-lecture2anki units add "AI" "Midterm 2"
-lecture2anki units add "AI" "Final"
+WHISPER_MODEL=small    # or "base" for less RAM usage
+WHISPER_LANGUAGE=en    # or leave empty for auto-detect
 ```
 
-### 5. Record a lecture
+### 3. Install Ollama (card generation)
 
 ```bash
-lecture2anki record
-# Select your course and unit, then start recording!
+# macOS
+brew install ollama
+
+# Then start the server (keep running in a separate terminal)
+ollama serve
+
+# Pull a model — pick one that fits your RAM (see table below)
+ollama pull phi3
 ```
 
-### Optional: use the local browser UI
+### 4. Set up Anki (card sync)
+
+1. Install [Anki](https://apps.ankiweb.net/)
+2. Go to **Tools > Add-ons > Get Add-ons**
+3. Enter code: `2055492159` (AnkiConnect)
+4. Restart Anki — keep it open while syncing cards
+
+### 5. Run the web UI
 
 ```bash
+source venv/bin/activate
 lecture2anki web
 ```
 
-Then open `http://127.0.0.1:8000` in your browser. The UI lets you:
+Open `http://127.0.0.1:8000` in your browser. From there you can:
 
-- create courses and units
-- record from your browser microphone and save audio locally
-- upload an existing lecture recording
-- transcribe saved lectures locally with Whisper
+1. **Create courses and units** (e.g. AI > Midterm 1)
+2. **Record from browser mic** or upload an audio file
+3. **Transcribe** the lecture locally with Whisper (runs as a background job)
+4. **Generate flashcards** from the transcript using Ollama (background job)
+5. **Review cards** — approve or reject each one
+6. **Sync approved cards to Anki** — creates the deck automatically
 
-### 6. Generate cards and sync to Anki
+## CLI Usage
 
-```bash
-# Generate flashcards from your last lecture
-lecture2anki generate --last
-
-# Sync to Anki
-lecture2anki sync
-```
-
-Your cards appear in Anki under `Lectures::AI::Midterm 1` (or whatever course/unit you selected).
-
-## 📖 Usage
-
-### Recording
+All of the above can also be done from the command line:
 
 ```bash
-# Interactive mode (recommended)
-lecture2anki record
+# Setup
+lecture2anki init                    # Create database
 
-# Direct mode
-lecture2anki record --course "AI" --unit "Midterm 1"
+# Course/Unit Management
+lecture2anki courses list            # Show all courses
+lecture2anki courses add "AI"        # Add new course
+lecture2anki units list "AI"         # Show units for AI course
+lecture2anki units add "AI" "Final"  # Add Final unit to AI
+
+# Recording
+lecture2anki record --course AI --unit "Midterm 2"
+
+# Transcription
+lecture2anki transcribe <lecture_id>
+
+# List lectures
+lecture2anki lectures
+lecture2anki lectures --course AI
+
+# Web UI
+lecture2anki web                     # Default: 127.0.0.1:8000
+lecture2anki web --port 3000         # Custom port
 ```
 
-### Local web UI
+Card generation, review, and Anki sync are currently available through the web UI.
 
-```bash
-# Start the browser UI
-lecture2anki web
-
-# Use a custom port if needed
-lecture2anki web --port 8123
-```
-
-### Managing courses and units
-
-```bash
-# List all courses
-lecture2anki courses list
-
-# List units for a course
-lecture2anki units list "AI"
-
-# Add a new unit
-lecture2anki units add "AI" "Quiz 3"
-```
-
-### Generating and syncing cards
-
-```bash
-# Generate cards for a specific lecture
-lecture2anki generate 42
-
-# Generate for most recent lecture
-lecture2anki generate --last
-
-# Sync all unsynced cards to Anki
-lecture2anki sync
-
-# View cards before syncing
-lecture2anki cards 42
-```
-
-## ⚙️ Configuration
+## Configuration
 
 Copy `.env.example` to `.env` and customize:
 
-| Setting            | Default    | Description                              |
-| ------------------ | ---------- | ---------------------------------------- |
-| `OLLAMA_MODEL`     | `phi3`     | LLM for card generation                  |
-| `WHISPER_MODEL`    | `small`    | Transcription model size                 |
-| `ANKI_ROOT_DECK`   | `Lectures` | Parent deck for all courses              |
-| `WHISPER_LANGUAGE` | `en`       | Language code (or empty for auto-detect) |
+| Setting              | Default                          | Description                              |
+| -------------------- | -------------------------------- | ---------------------------------------- |
+| `WHISPER_MODEL`      | `small`                          | Transcription model size                 |
+| `WHISPER_LANGUAGE`   | `en`                             | Language code (or empty for auto-detect) |
+| `OLLAMA_MODEL`       | `phi3`                           | LLM for card generation                  |
+| `OLLAMA_HOST`        | `http://localhost:11434`         | Ollama server URL                        |
+| `OLLAMA_CONTEXT_SIZE`| `2048`                           | LLM context window                       |
+| `ANKI_ROOT_DECK`     | `Lectures`                       | Parent deck for all courses              |
+| `ANKI_CONNECT_URL`   | `http://localhost:8765`          | AnkiConnect URL                          |
+| `DATABASE_PATH`      | `~/.lecture2anki/lecture2anki.db` | SQLite database location                 |
 
 See `.env.example` for all options with detailed comments.
 
-### Memory recommendations
+### Model recommendations by RAM
 
-| Your RAM | Whisper Model     | Ollama Model            |
-| -------- | ----------------- | ----------------------- |
-| 8GB      | `small` or `base` | `phi3`, `qwen2:1.5b`    |
-| 16GB     | `medium`          | `llama3`, `mistral`     |
-| 32GB+    | `large`           | `llama3:70b`, `mixtral` |
+| Your RAM | Whisper Model     | Ollama Model              |
+| -------- | ----------------- | ------------------------- |
+| 8GB      | `small` or `base` | `phi3`, `qwen2:1.5b`     |
+| 16GB     | `medium`          | `llama3`, `mistral`       |
+| 32GB+    | `large`           | `llama3:70b`, `mixtral`   |
 
-## 🏗️ How it works
+## How it works
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Record    │ ──▶ │ Transcribe  │ ──▶ │   Chunk     │
-│   Audio     │     │  (Whisper)  │     │   Text      │
-└─────────────┘     └─────────────┘     └─────────────┘
-                                               │
-                                               ▼
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│    Anki     │ ◀── │  Dedupe &   │ ◀── │  Generate   │
-│    Sync     │     │   Clean     │     │   Cards     │
-└─────────────┘     └─────────────┘     └─────────────┘
+Record/Upload  -->  Transcribe (Whisper)  -->  Chunk text
+                                                    |
+                                                    v
+Sync to Anki   <--  Review (approve/reject)  <--  Generate cards (Ollama)
 ```
 
-1. **Record** — Captures audio from your microphone in chunks
-2. **Transcribe** — Whisper converts speech to text locally
-3. **Chunk** — Splits transcript into LLM-friendly pieces
+1. **Record** — Capture audio from browser mic or upload a file
+2. **Transcribe** — faster-whisper converts speech to timestamped text segments
+3. **Chunk** — Segments are grouped into 500-1200 word blocks for the LLM
 4. **Generate** — Ollama creates flashcards from each chunk
-5. **Dedupe** — Removes duplicate/similar cards
-6. **Sync** — Pushes cards to Anki via AnkiConnect
+5. **Review** — Approve or reject each card in the web UI
+6. **Sync** — Approved cards are pushed to Anki via AnkiConnect
 
-## 🗂️ Project structure
+Cards land in Anki under `Lectures::CourseName::UnitName` (e.g. `Lectures::AI::Midterm 1`).
+
+## Project structure
 
 ```
 lecture2anki/
 ├── src/
 │   ├── config.py          # Environment-backed settings
-│   ├── recorder.py        # Microphone recording workflow
-│   ├── db.py              # Database operations
-│   ├── models.py          # Data models
+│   ├── db.py              # SQLite operations
+│   ├── models.py          # Data models (Course, Unit, Lecture, Segment, Card)
+│   ├── recorder.py        # Recording + audio upload
 │   ├── transcriber.py     # Whisper integration
-│   ├── chunker.py         # Text chunking
-│   ├── card_generator.py  # Ollama integration
-│   ├── deduplicator.py    # Card deduplication
-│   ├── anki_client.py     # AnkiConnect client
-│   └── cli.py             # Command-line interface
-├── tests/                 # Test suite
-├── claude.md              # AI assistant context
+│   ├── chunker.py         # Text chunking for LLM
+│   ├── card_generator.py  # Ollama card generation
+│   ├── anki_client.py     # AnkiConnect sync client
+│   ├── web.py             # FastAPI web app + background jobs
+│   ├── web_static/        # HTML/CSS/JS frontend
+│   └── cli.py             # Click CLI
+├── tests/                 # Test suite (92 tests)
+├── CLAUDE.md              # AI assistant context
 ├── .env.example           # Configuration template
 └── pyproject.toml         # Project config
 ```
 
-## 🤝 Contributing
+## Development
+
+```bash
+source venv/bin/activate
+pytest                  # Run all tests
+pytest -v               # Verbose
+pytest --cov=src        # With coverage
+ruff check .            # Lint
+ruff format .           # Format
+```
+
+## Contributing
 
 Contributions are welcome! This project follows TDD practices.
 
@@ -243,9 +213,9 @@ Contributions are welcome! This project follows TDD practices.
 4. Run tests: `pytest`
 5. Submit a PR
 
-See [claude.md](claude.md) for coding conventions and architecture details.
+See [CLAUDE.md](CLAUDE.md) for coding conventions and architecture details.
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### "Connection refused" when syncing to Anki
 
@@ -257,11 +227,10 @@ curl http://localhost:8765 -X POST -d '{"action": "version", "version": 6}'
 
 ### Transcription is slow
 
-Try a smaller Whisper model:
+Try a smaller Whisper model in `.env`:
 
 ```bash
-# In .env
-WHISPER_MODEL=base  # faster than "small"
+WHISPER_MODEL=base
 ```
 
 ### Out of memory errors
@@ -279,20 +248,30 @@ OLLAMA_CONTEXT_SIZE=2048
 Check Ollama is running:
 
 ```bash
-ollama list  # Should show your model
-curl http://localhost:11434/api/tags  # Should return JSON
+ollama list
+curl http://localhost:11434/api/tags
 ```
 
-## 📜 License
+### Web UI won't start
+
+Make sure you're in the virtual environment:
+
+```bash
+source venv/bin/activate
+lecture2anki web
+```
+
+## License
 
 MIT — do whatever you want with it.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper) — Fast Whisper inference
 - [Ollama](https://ollama.ai) — Local LLM runtime
 - [AnkiConnect](https://github.com/FooSoft/anki-connect) — Anki API
+- [FastAPI](https://fastapi.tiangolo.com/) — Web framework
 
 ---
 
-**Made with ☕ by students, for students.**
+**Made by students, for students.**

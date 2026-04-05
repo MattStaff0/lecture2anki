@@ -5,11 +5,17 @@ import pytest
 
 from src.db import (
     add_segment,
+    approve_card,
     create_card,
     create_course,
     create_lecture,
     create_unit,
+    delete_card,
+    delete_cards_for_lecture,
+    get_approved_unsynced_cards,
+    get_card_by_id,
     get_cards_for_lecture,
+    get_cards_for_lecture_by_status,
     get_course_by_id,
     get_courses,
     get_deck_path_for_lecture,
@@ -196,6 +202,7 @@ class TestCards:
         assert card.front == "What is ML?"
         assert card.back == "Machine learning is..."
         assert card.tags == ["ai", "ml"]
+        assert card.status == "pending"
         assert card.synced_to_anki is False
         assert card.anki_note_id is None
 
@@ -214,7 +221,9 @@ class TestCards:
         unit = create_unit(db, course.id, "Midterm 1")
         lecture = create_lecture(db, unit.id)
         card1 = create_card(db, lecture.id, "Q1", "A1", ["tag1"])
-        create_card(db, lecture.id, "Q2", "A2", ["tag2"])
+        card2 = create_card(db, lecture.id, "Q2", "A2", ["tag2"])
+        approve_card(db, card1.id)
+        approve_card(db, card2.id)
         mark_card_synced(db, card1.id, anki_note_id=12345)
 
         unsynced = get_unsynced_cards(db)
@@ -232,6 +241,75 @@ class TestCards:
         cards = get_cards_for_lecture(db, lecture.id)
         assert cards[0].synced_to_anki is True
         assert cards[0].anki_note_id == 12345
+
+
+# --- Card review ---
+
+
+class TestCardReview:
+    def test_approve_card(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        card = create_card(db, lecture.id, "Q1", "A1", [])
+        assert card.status == "pending"
+
+        approve_card(db, card.id)
+
+        fetched = get_card_by_id(db, card.id)
+        assert fetched is not None
+        assert fetched.status == "approved"
+
+    def test_delete_card(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        card = create_card(db, lecture.id, "Q1", "A1", [])
+
+        delete_card(db, card.id)
+
+        assert get_card_by_id(db, card.id) is None
+
+    def test_get_cards_for_lecture_by_status(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        card1 = create_card(db, lecture.id, "Q1", "A1", [])
+        card2 = create_card(db, lecture.id, "Q2", "A2", [])
+        approve_card(db, card1.id)
+
+        pending = get_cards_for_lecture_by_status(db, lecture.id, "pending")
+        approved = get_cards_for_lecture_by_status(db, lecture.id, "approved")
+        assert len(pending) == 1
+        assert len(approved) == 1
+        assert pending[0].front == "Q2"
+        assert approved[0].front == "Q1"
+
+    def test_get_approved_unsynced_cards(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        card1 = create_card(db, lecture.id, "Q1", "A1", [])
+        card2 = create_card(db, lecture.id, "Q2", "A2", [])
+        card3 = create_card(db, lecture.id, "Q3", "A3", [])
+        approve_card(db, card1.id)
+        approve_card(db, card2.id)
+        mark_card_synced(db, card1.id, anki_note_id=111)
+
+        result = get_approved_unsynced_cards(db, lecture.id)
+        assert len(result) == 1
+        assert result[0].front == "Q2"
+
+    def test_delete_cards_for_lecture(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        create_card(db, lecture.id, "Q1", "A1", [])
+        create_card(db, lecture.id, "Q2", "A2", [])
+
+        delete_cards_for_lecture(db, lecture.id)
+
+        assert get_cards_for_lecture(db, lecture.id) == []
 
 
 # --- Helpers ---
