@@ -12,8 +12,8 @@
         <p class="eyebrow">Lecture2Anki</p>
         <h1>Capture lectures in the browser, transcribe locally, keep everything on your machine.</h1>
         <p class="lede">
-          This UI sits on top of your local SQLite database and your local Whisper runtime.
-          Record from the browser or upload audio, then transcribe each lecture into segments.
+          Record from the browser or upload audio, transcribe, generate flashcards with a local LLM,
+          review them, and sync approved cards to Anki.
         </p>
         <div class="hero-actions">
           <span class="status-pill" id="status-pill">Idle</span>
@@ -22,6 +22,7 @@
       </header>
 
       <main class="grid">
+        <!-- Setup panel -->
         <section class="panel panel-accent" id="setup-panel">
           <div class="panel-head">
             <p class="kicker">Setup</p>
@@ -55,6 +56,7 @@
           <div id="course-list" class="course-list"></div>
         </section>
 
+        <!-- Capture panel -->
         <section class="panel" id="capture-panel">
           <div class="panel-head">
             <p class="kicker">Capture</p>
@@ -77,7 +79,7 @@
             </div>
             <p class="hint">
               Browser recording uses your mic permission and uploads the audio into your local
-              Lecture2Anki recordings folder. If recording is unavailable, use file upload below.
+              Lecture2Anki recordings folder.
             </p>
           </form>
 
@@ -90,6 +92,7 @@
           </form>
         </section>
 
+        <!-- Lecture list -->
         <section class="panel panel-wide">
           <div class="panel-head">
             <p class="kicker">Lecture Log</p>
@@ -98,6 +101,7 @@
           <div id="lecture-list" class="lecture-list"></div>
         </section>
 
+        <!-- Transcript viewer -->
         <section class="panel panel-wide transcript-panel">
           <div class="panel-head">
             <p class="kicker">Transcript</p>
@@ -107,6 +111,18 @@
             Pick a lecture to inspect its saved transcript segments.
           </div>
           <div id="transcript-view" class="transcript-view"></div>
+        </section>
+
+        <!-- Card review panel -->
+        <section class="panel panel-wide" id="cards-panel">
+          <div class="panel-head">
+            <p class="kicker">Flashcards</p>
+            <h2>Review generated cards</h2>
+          </div>
+          <div id="cards-empty" class="empty-state">
+            Generate cards for a lecture, then review them here.
+          </div>
+          <div id="cards-view" class="cards-view"></div>
         </section>
       </main>
     </div>

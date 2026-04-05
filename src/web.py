@@ -1,25 +1,39 @@
-"""Local web UI for Lecture2Anki."""
+"""FastAPI-based local web UI for Lecture2Anki."""
 
 from __future__ import annotations
 
-import json
-import mimetypes
-import re
 import sqlite3
+import threading
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs
-from wsgiref.simple_server import make_server
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.config import get_database_path
-from src.db import create_course, create_unit, get_courses, get_units_for_course, init_db
+from src.db import (
+    approve_card,
+    create_course,
+    create_unit,
+    delete_card,
+    get_approved_unsynced_cards,
+    get_card_by_id,
+    get_cards_for_lecture,
+    get_course_by_id,
+    get_courses,
+    get_unit_by_name,
+    get_units_for_course,
+    init_db,
+)
 from src.recorder import save_uploaded_audio
 from src.transcriber import find_recording_for_lecture, transcribe_lecture
 
-
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
-TRANSCRIBE_ROUTE = re.compile(r"^/api/lectures/(?P<lecture_id>\d+)/transcribe$")
-SEGMENTS_ROUTE = re.compile(r"^/api/lectures/(?P<lecture_id>\d+)/segments$")
+
 MIME_TO_SUFFIX = {
     "audio/mp4": ".m4a",
     "audio/mpeg": ".mp3",
@@ -31,84 +45,83 @@ MIME_TO_SUFFIX = {
 }
 
 
-def _connect(database_path: Path | None = None) -> sqlite3.Connection:
-    """Open the configured SQLite database and ensure the schema exists."""
-    path = database_path or get_database_path()
+# ---------------------------------------------------------------------------
+# Database connection helper
+# ---------------------------------------------------------------------------
+
+_database_path: Path | None = None
+
+
+def _connect() -> sqlite3.Connection:
+    path = _database_path or get_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     init_db(conn)
     return conn
 
 
-def _json_response(start_response, status: str, payload: dict[str, Any]) -> list[bytes]:
-    """Return a JSON response."""
-    body = json.dumps(payload).encode("utf-8")
-    headers = [
-        ("Content-Type", "application/json; charset=utf-8"),
-        ("Content-Length", str(len(body))),
-        ("Cache-Control", "no-store"),
-    ]
-    start_response(status, headers)
-    return [body]
+# ---------------------------------------------------------------------------
+# Background job registry
+# ---------------------------------------------------------------------------
 
 
-def _text_response(start_response, status: str, text: str) -> list[bytes]:
-    """Return a plain-text response."""
-    body = text.encode("utf-8")
-    headers = [
-        ("Content-Type", "text/plain; charset=utf-8"),
-        ("Content-Length", str(len(body))),
-        ("Cache-Control", "no-store"),
-    ]
-    start_response(status, headers)
-    return [body]
+class JobStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
 
 
-def _serve_static(start_response, asset_name: str) -> list[bytes]:
-    """Serve a static UI asset from disk."""
-    asset_path = STATIC_DIR / asset_name
-    if not asset_path.exists():
-        return _text_response(start_response, "404 Not Found", "Asset not found.")
-
-    body = asset_path.read_bytes()
-    content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
-    headers = [
-        ("Content-Type", content_type),
-        ("Content-Length", str(len(body))),
-        ("Cache-Control", "no-store"),
-    ]
-    start_response("200 OK", headers)
-    return [body]
+@dataclass
+class Job:
+    id: str
+    type: str
+    status: JobStatus = JobStatus.queued
+    message: str = ""
+    result: dict[str, Any] = field(default_factory=dict)
 
 
-def _read_json_body(environ) -> dict[str, Any]:
-    """Read a JSON request body."""
-    try:
-        content_length = int(environ.get("CONTENT_LENGTH", "0") or "0")
-    except ValueError:
-        content_length = 0
-    raw_body = environ["wsgi.input"].read(content_length) if content_length else b""
-    if not raw_body:
-        return {}
-    return json.loads(raw_body.decode("utf-8"))
+_jobs: dict[str, Job] = {}
+_jobs_lock = threading.Lock()
 
 
-def _read_multipart_form(environ):
-    """Parse multipart form data."""
-    import cgi
+def _create_job(job_type: str) -> Job:
+    job_id = uuid.uuid4().hex[:12]
+    job = Job(id=job_id, type=job_type)
+    with _jobs_lock:
+        _jobs[job_id] = job
+    return job
 
-    return cgi.FieldStorage(fp=environ["wsgi.input"], environ=environ, keep_blank_values=True)
+
+def _get_job(job_id: str) -> Job | None:
+    with _jobs_lock:
+        return _jobs.get(job_id)
 
 
-def _float_or_none(value: str | None) -> float | None:
-    """Parse an optional float form field."""
-    if value in (None, ""):
-        return None
-    return float(value)
+def _run_in_background(job: Job, target: Any, args: tuple = ()) -> None:
+    """Run *target* in a daemon thread, updating job status on completion."""
+
+    def _wrapper() -> None:
+        job.status = JobStatus.running
+        try:
+            result = target(*args)
+            job.result = result if isinstance(result, dict) else {}
+            job.status = JobStatus.succeeded
+            job.message = "Done"
+        except Exception as exc:
+            job.status = JobStatus.failed
+            job.message = str(exc)
+
+    t = threading.Thread(target=_wrapper, daemon=True)
+    t.start()
+
+
+# ---------------------------------------------------------------------------
+# Serialisation helpers
+# ---------------------------------------------------------------------------
 
 
 def _audio_suffix(filename: str | None, content_type: str | None) -> str:
-    """Resolve an audio file suffix from filename or content type."""
     if filename:
         suffix = Path(filename).suffix.lower()
         if suffix:
@@ -119,20 +132,15 @@ def _audio_suffix(filename: str | None, content_type: str | None) -> str:
 
 
 def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Return the data required to render the UI."""
-    courses = []
+    courses_out: list[dict[str, Any]] = []
     for course in get_courses(conn):
-        courses.append(
+        courses_out.append(
             {
                 "id": course.id,
                 "name": course.name,
                 "units": [
-                    {
-                        "id": unit.id,
-                        "name": unit.name,
-                        "sort_order": unit.sort_order,
-                    }
-                    for unit in get_units_for_course(conn, course.id)
+                    {"id": u.id, "name": u.name, "sort_order": u.sort_order}
+                    for u in get_units_for_course(conn, course.id)
                 ],
             }
         )
@@ -140,28 +148,29 @@ def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
     lecture_rows = conn.execute(
         "SELECT l.id, COALESCE(l.title, 'Untitled lecture') AS title, l.recorded_at, "
         "l.duration_seconds, u.id AS unit_id, u.name AS unit_name, "
-        "c.id AS course_id, c.name AS course_name, COUNT(s.id) AS segment_count "
+        "c.id AS course_id, c.name AS course_name, "
+        "(SELECT COUNT(*) FROM segments s WHERE s.lecture_id = l.id) AS segment_count, "
+        "(SELECT COUNT(*) FROM cards cd WHERE cd.lecture_id = l.id) AS card_count, "
+        "(SELECT COUNT(*) FROM cards cd WHERE cd.lecture_id = l.id "
+        " AND cd.status = 'approved') AS approved_count, "
+        "(SELECT COUNT(*) FROM cards cd WHERE cd.lecture_id = l.id "
+        " AND cd.synced_to_anki = 1) AS synced_count "
         "FROM lectures l "
         "JOIN units u ON l.unit_id = u.id "
         "JOIN courses c ON u.course_id = c.id "
-        "LEFT JOIN segments s ON s.lecture_id = l.id "
-        "GROUP BY l.id, u.id, c.id "
         "ORDER BY l.recorded_at DESC"
     ).fetchall()
 
-    lectures = []
+    lectures_out: list[dict[str, Any]] = []
     for row in lecture_rows:
         lecture_id = row[0]
         try:
-            recording_path = find_recording_for_lecture(lecture_id)
-        except FileNotFoundError:
-            recording_name = None
-            has_recording = False
-        else:
-            recording_name = recording_path.name
+            find_recording_for_lecture(lecture_id)
             has_recording = True
+        except FileNotFoundError:
+            has_recording = False
 
-        lectures.append(
+        lectures_out.append(
             {
                 "id": lecture_id,
                 "title": row[1],
@@ -172,209 +181,459 @@ def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
                 "course_id": row[6],
                 "course_name": row[7],
                 "segment_count": row[8],
+                "card_count": row[9],
+                "approved_count": row[10],
+                "synced_count": row[11],
                 "has_recording": has_recording,
-                "recording_name": recording_name,
             }
         )
 
+    return {"courses": courses_out, "lectures": lectures_out}
+
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="Lecture2Anki", docs_url=None, redoc_url=None)
+
+
+# --- Bootstrap ---
+
+
+@app.get("/api/bootstrap")
+def api_bootstrap() -> dict[str, Any]:
+    conn = _connect()
+    try:
+        return _serialize_bootstrap(conn)
+    finally:
+        conn.close()
+
+
+# --- Courses ---
+
+
+@app.post("/api/courses", status_code=201)
+def api_create_course(body: dict[str, Any]) -> dict[str, Any]:
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Course name is required.")
+    conn = _connect()
+    try:
+        course = create_course(conn, name)
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, f"Course already exists: {name}")
+    finally:
+        conn.close()
+    return {"course": {"id": course.id, "name": course.name}}
+
+
+@app.patch("/api/courses/{course_id}")
+def api_rename_course(course_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Course name is required.")
+    conn = _connect()
+    try:
+        course = get_course_by_id(conn, course_id)
+        if course is None:
+            raise HTTPException(404, "Course not found.")
+        conn.execute("UPDATE courses SET name = ? WHERE id = ?", (name, course_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, f"Course name already taken: {name}")
+    finally:
+        conn.close()
+    return {"course": {"id": course_id, "name": name}}
+
+
+@app.delete("/api/courses/{course_id}")
+def api_delete_course(course_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        course = get_course_by_id(conn, course_id)
+        if course is None:
+            raise HTTPException(404, "Course not found.")
+        units = get_units_for_course(conn, course_id)
+        if units:
+            raise HTTPException(
+                409, "Cannot delete course with existing units. Delete units first."
+            )
+        conn.execute("DELETE FROM courses WHERE id = ?", (course_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"deleted": True}
+
+
+# --- Units ---
+
+
+@app.post("/api/units", status_code=201)
+def api_create_unit(body: dict[str, Any]) -> dict[str, Any]:
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Unit name is required.")
+    try:
+        course_id = int(body.get("course_id"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise HTTPException(400, "A valid course_id is required.")
+    sort_order = int(body.get("sort_order") or 0)
+    conn = _connect()
+    try:
+        unit = create_unit(conn, course_id, name, sort_order=sort_order)
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, f"Unit already exists for this course: {name}")
+    finally:
+        conn.close()
     return {
-        "courses": courses,
-        "lectures": lectures,
+        "unit": {
+            "id": unit.id,
+            "course_id": unit.course_id,
+            "name": unit.name,
+            "sort_order": unit.sort_order,
+        }
     }
 
 
-def _serialize_segments(conn: sqlite3.Connection, lecture_id: int) -> list[dict[str, Any]]:
-    """Return transcript segments for a lecture."""
-    rows = conn.execute(
-        "SELECT id, start_time, end_time, text "
-        "FROM segments WHERE lecture_id = ? ORDER BY start_time",
-        (lecture_id,),
-    ).fetchall()
-    return [
-        {
-            "id": row[0],
-            "start_time": row[1],
-            "end_time": row[2],
-            "text": row[3],
-        }
-        for row in rows
-    ]
-
-
-class Lecture2AnkiWebApp:
-    """Minimal WSGI app for the local browser UI."""
-
-    def __init__(self, database_path: Path | None = None) -> None:
-        self.database_path = database_path
-
-    def __call__(self, environ, start_response) -> list[bytes]:
-        method = environ.get("REQUEST_METHOD", "GET")
-        path = environ.get("PATH_INFO", "/")
-
-        try:
-            if method == "GET" and path == "/":
-                return _serve_static(start_response, "index.html")
-            if method == "GET" and path == "/static/app.js":
-                return _serve_static(start_response, "app.js")
-            if method == "GET" and path == "/static/styles.css":
-                return _serve_static(start_response, "styles.css")
-            if method == "GET" and path == "/api/bootstrap":
-                return self._bootstrap(start_response)
-            if method == "POST" and path == "/api/courses":
-                return self._create_course(environ, start_response)
-            if method == "POST" and path == "/api/units":
-                return self._create_unit(environ, start_response)
-            if method == "POST" and path == "/api/lectures/upload":
-                return self._upload_lecture(environ, start_response)
-
-            transcribe_match = TRANSCRIBE_ROUTE.match(path)
-            if method == "POST" and transcribe_match:
-                lecture_id = int(transcribe_match.group("lecture_id"))
-                return self._transcribe_lecture(start_response, lecture_id)
-
-            segments_match = SEGMENTS_ROUTE.match(path)
-            if method == "GET" and segments_match:
-                lecture_id = int(segments_match.group("lecture_id"))
-                return self._segments(start_response, lecture_id)
-
-            return _text_response(start_response, "404 Not Found", "Route not found.")
-        except sqlite3.IntegrityError as exc:
-            return _json_response(start_response, "409 Conflict", {"error": str(exc)})
-        except ValueError as exc:
-            return _json_response(start_response, "400 Bad Request", {"error": str(exc)})
-        except FileNotFoundError as exc:
-            return _json_response(start_response, "404 Not Found", {"error": str(exc)})
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            return _json_response(start_response, "500 Internal Server Error", {"error": str(exc)})
-
-    def _bootstrap(self, start_response) -> list[bytes]:
-        conn = _connect(self.database_path)
-        try:
-            payload = _serialize_bootstrap(conn)
-        finally:
-            conn.close()
-        return _json_response(start_response, "200 OK", payload)
-
-    def _create_course(self, environ, start_response) -> list[bytes]:
-        body = _read_json_body(environ)
-        name = (body.get("name") or "").strip()
-        if not name:
-            raise ValueError("Course name is required.")
-
-        conn = _connect(self.database_path)
-        try:
-            course = create_course(conn, name)
-        finally:
-            conn.close()
-
-        return _json_response(
-            start_response,
-            "201 Created",
-            {"course": {"id": course.id, "name": course.name}},
+@app.patch("/api/units/{unit_id}")
+def api_update_unit(unit_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT id, course_id, name, sort_order FROM units WHERE id = ?", (unit_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Unit not found.")
+        name = (body.get("name") or "").strip() or row[2]
+        sort_order = body.get("sort_order", row[3])
+        conn.execute(
+            "UPDATE units SET name = ?, sort_order = ? WHERE id = ?",
+            (name, int(sort_order), unit_id),
         )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, f"Unit name already taken in this course: {name}")
+    finally:
+        conn.close()
+    return {"unit": {"id": unit_id, "name": name, "sort_order": sort_order}}
 
-    def _create_unit(self, environ, start_response) -> list[bytes]:
-        body = _read_json_body(environ)
-        unit_name = (body.get("name") or "").strip()
-        if not unit_name:
-            raise ValueError("Unit name is required.")
 
-        try:
-            course_id = int(body.get("course_id"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("A valid course is required.") from exc
-
-        sort_order = int(body.get("sort_order") or 0)
-
-        conn = _connect(self.database_path)
-        try:
-            unit = create_unit(conn, course_id, unit_name, sort_order=sort_order)
-        finally:
-            conn.close()
-
-        return _json_response(
-            start_response,
-            "201 Created",
-            {
-                "unit": {
-                    "id": unit.id,
-                    "course_id": unit.course_id,
-                    "name": unit.name,
-                    "sort_order": unit.sort_order,
-                }
-            },
-        )
-
-    def _upload_lecture(self, environ, start_response) -> list[bytes]:
-        form = _read_multipart_form(environ)
-        try:
-            unit_id = int(form.getfirst("unit_id", ""))
-        except ValueError as exc:
-            raise ValueError("A valid unit is required.") from exc
-
-        title = (form.getfirst("title", "") or "").strip() or None
-        duration_seconds = _float_or_none(form.getfirst("duration_seconds"))
-
-        if "audio" not in form:
-            raise ValueError("Audio upload is required.")
-
-        upload = form["audio"]
-        audio_bytes = upload.file.read()
-        if not audio_bytes:
-            raise ValueError("Uploaded audio file is empty.")
-
-        suffix = _audio_suffix(upload.filename, upload.type)
-
-        conn = _connect(self.database_path)
-        try:
-            result = save_uploaded_audio(
-                conn,
-                unit_id=unit_id,
-                audio_bytes=audio_bytes,
-                suffix=suffix,
-                title=title,
-                duration_seconds=duration_seconds,
+@app.delete("/api/units/{unit_id}")
+def api_delete_unit(unit_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT id FROM units WHERE id = ?", (unit_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Unit not found.")
+        lectures = conn.execute(
+            "SELECT id FROM lectures WHERE unit_id = ?", (unit_id,)
+        ).fetchall()
+        if lectures:
+            raise HTTPException(
+                409, "Cannot delete unit with existing lectures."
             )
-        finally:
-            conn.close()
+        conn.execute("DELETE FROM units WHERE id = ?", (unit_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"deleted": True}
 
-        return _json_response(
-            start_response,
-            "201 Created",
+
+# --- Lectures ---
+
+
+@app.get("/api/lectures")
+def api_list_lectures() -> dict[str, Any]:
+    conn = _connect()
+    try:
+        data = _serialize_bootstrap(conn)
+    finally:
+        conn.close()
+    return {"lectures": data["lectures"]}
+
+
+@app.post("/api/lectures/upload", status_code=201)
+async def api_upload_lecture(
+    unit_id: int = Form(...),
+    title: str = Form(""),
+    duration_seconds: float | None = Form(None),
+    audio: UploadFile = File(...),
+) -> dict[str, Any]:
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(400, "Uploaded audio file is empty.")
+    suffix = _audio_suffix(audio.filename, audio.content_type)
+    clean_title = title.strip() or None
+    conn = _connect()
+    try:
+        result = save_uploaded_audio(
+            conn,
+            unit_id=unit_id,
+            audio_bytes=audio_bytes,
+            suffix=suffix,
+            title=clean_title,
+            duration_seconds=duration_seconds,
+        )
+    finally:
+        conn.close()
+    return {
+        "lecture": {
+            "id": result.lecture.id,
+            "title": result.lecture.title,
+            "duration_seconds": result.duration_seconds,
+        }
+    }
+
+
+@app.get("/api/lectures/{lecture_id}")
+def api_lecture_detail(lecture_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT l.id, COALESCE(l.title, 'Untitled lecture'), l.recorded_at, "
+            "l.duration_seconds, u.name, c.name "
+            "FROM lectures l JOIN units u ON l.unit_id = u.id "
+            "JOIN courses c ON u.course_id = c.id WHERE l.id = ?",
+            (lecture_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+        segment_count = conn.execute(
+            "SELECT COUNT(*) FROM segments WHERE lecture_id = ?", (lecture_id,)
+        ).fetchone()[0]
+        card_count = conn.execute(
+            "SELECT COUNT(*) FROM cards WHERE lecture_id = ?", (lecture_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    return {
+        "lecture": {
+            "id": row[0],
+            "title": row[1],
+            "recorded_at": row[2],
+            "duration_seconds": row[3],
+            "unit_name": row[4],
+            "course_name": row[5],
+            "segment_count": segment_count,
+            "card_count": card_count,
+        }
+    }
+
+
+# --- Transcription ---
+
+
+@app.post("/api/lectures/{lecture_id}/transcribe")
+def api_transcribe(lecture_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+        try:
+            find_recording_for_lecture(lecture_id)
+        except FileNotFoundError:
+            raise HTTPException(400, "No recording found for this lecture.")
+    finally:
+        conn.close()
+
+    job = _create_job("transcription")
+
+    def _do_transcribe() -> dict[str, Any]:
+        c = _connect()
+        try:
+            segs = transcribe_lecture(c, lecture_id)
+            return {"lecture_id": lecture_id, "segment_count": len(segs)}
+        finally:
+            c.close()
+
+    _run_in_background(job, _do_transcribe)
+    return {"job_id": job.id}
+
+
+@app.get("/api/lectures/{lecture_id}/segments")
+def api_segments(lecture_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, start_time, end_time, text "
+            "FROM segments WHERE lecture_id = ? ORDER BY start_time",
+            (lecture_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        "lecture_id": lecture_id,
+        "segments": [
+            {"id": r[0], "start_time": r[1], "end_time": r[2], "text": r[3]}
+            for r in rows
+        ],
+    }
+
+
+# --- Card generation ---
+
+
+@app.post("/api/lectures/{lecture_id}/generate")
+def api_generate(lecture_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+        seg_count = conn.execute(
+            "SELECT COUNT(*) FROM segments WHERE lecture_id = ?", (lecture_id,)
+        ).fetchone()[0]
+        if seg_count == 0:
+            raise HTTPException(400, "No transcript segments. Transcribe first.")
+    finally:
+        conn.close()
+
+    job = _create_job("generation")
+
+    def _do_generate() -> dict[str, Any]:
+        from src.card_generator import generate_cards_for_lecture
+
+        c = _connect()
+        try:
+            cards = generate_cards_for_lecture(c, lecture_id)
+            return {"lecture_id": lecture_id, "card_count": len(cards)}
+        finally:
+            c.close()
+
+    _run_in_background(job, _do_generate)
+    return {"job_id": job.id}
+
+
+# --- Cards ---
+
+
+@app.get("/api/lectures/{lecture_id}/cards")
+def api_cards(lecture_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        cards = get_cards_for_lecture(conn, lecture_id)
+    finally:
+        conn.close()
+    return {
+        "lecture_id": lecture_id,
+        "cards": [
             {
-                "lecture": {
-                    "id": result.lecture.id,
-                    "title": result.lecture.title,
-                    "duration_seconds": result.duration_seconds,
-                    "audio_path": str(result.audio_path),
-                }
-            },
-        )
+                "id": c.id,
+                "front": c.front,
+                "back": c.back,
+                "tags": c.tags,
+                "status": c.status,
+                "synced_to_anki": c.synced_to_anki,
+            }
+            for c in cards
+        ],
+    }
 
-    def _transcribe_lecture(self, start_response, lecture_id: int) -> list[bytes]:
-        conn = _connect(self.database_path)
+
+@app.post("/api/cards/{card_id}/approve")
+def api_approve_card(card_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        card = get_card_by_id(conn, card_id)
+        if card is None:
+            raise HTTPException(404, "Card not found.")
+        approve_card(conn, card_id)
+    finally:
+        conn.close()
+    return {"card_id": card_id, "status": "approved"}
+
+
+@app.delete("/api/cards/{card_id}")
+def api_reject_card(card_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        card = get_card_by_id(conn, card_id)
+        if card is None:
+            raise HTTPException(404, "Card not found.")
+        delete_card(conn, card_id)
+    finally:
+        conn.close()
+    return {"card_id": card_id, "deleted": True}
+
+
+# --- Anki sync ---
+
+
+@app.post("/api/lectures/{lecture_id}/sync")
+def api_sync(lecture_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+        approved = get_approved_unsynced_cards(conn, lecture_id)
+        if not approved:
+            raise HTTPException(400, "No approved unsynced cards for this lecture.")
+    finally:
+        conn.close()
+
+    job = _create_job("sync")
+
+    def _do_sync() -> dict[str, Any]:
+        from src.anki_client import sync_lecture
+
+        c = _connect()
         try:
-            segments = transcribe_lecture(conn, lecture_id)
+            result = sync_lecture(c, lecture_id)
+            return {"synced": result.synced, "failed": result.failed, "errors": result.errors}
         finally:
-            conn.close()
+            c.close()
 
-        return _json_response(
-            start_response,
-            "200 OK",
-            {"lecture_id": lecture_id, "segment_count": len(segments)},
-        )
-
-    def _segments(self, start_response, lecture_id: int) -> list[bytes]:
-        conn = _connect(self.database_path)
-        try:
-            payload = {"lecture_id": lecture_id, "segments": _serialize_segments(conn, lecture_id)}
-        finally:
-            conn.close()
-        return _json_response(start_response, "200 OK", payload)
+    _run_in_background(job, _do_sync)
+    return {"job_id": job.id}
 
 
-def run_web_app(host: str = "127.0.0.1", port: int = 8000, database_path: Path | None = None) -> None:
-    """Run the local web app until interrupted."""
-    app = Lecture2AnkiWebApp(database_path=database_path)
-    with make_server(host, port, app) as server:
-        server.serve_forever()
+# --- Jobs ---
+
+
+@app.get("/api/jobs/{job_id}")
+def api_job_status(job_id: str) -> dict[str, Any]:
+    job = _get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found.")
+    return {
+        "job_id": job.id,
+        "type": job.type,
+        "status": job.status.value,
+        "message": job.message,
+        "result": job.result,
+    }
+
+
+# --- Static files (must be last) ---
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# Serve index.html at root
+@app.get("/")
+def index() -> Any:
+    from fastapi.responses import FileResponse
+
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+# ---------------------------------------------------------------------------
+# Entry point for CLI
+# ---------------------------------------------------------------------------
+
+
+def run_web_app(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    database_path: Path | None = None,
+) -> None:
+    """Run the FastAPI app with uvicorn."""
+    global _database_path
+    _database_path = database_path
+
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port, log_level="info")

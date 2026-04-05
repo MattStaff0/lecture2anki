@@ -47,6 +47,7 @@ class Card:
     front: str
     back: str
     tags: list[str]
+    status: str  # "pending", "approved", "rejected"
     synced_to_anki: bool
     anki_note_id: int | None
     created_at: datetime

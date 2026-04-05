@@ -279,6 +279,68 @@ button:disabled {
   color: var(--warning);
 }
 
+.cards-view {
+  display: grid;
+  gap: 14px;
+}
+
+.card-review {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 252, 247, 0.86);
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.card-review.card-approved {
+  border-color: var(--success);
+  background: rgba(47, 107, 67, 0.06);
+}
+
+.card-review.card-synced {
+  opacity: 0.7;
+}
+
+.card-front,
+.card-back {
+  line-height: 1.5;
+}
+
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.card-status-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.card-approved .card-status-label {
+  color: var(--success);
+}
+
+.button-danger {
+  background: #913b2b;
+}
+
+.button-danger:hover:not(:disabled) {
+  background: #6e2b1f;
+}
+
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
