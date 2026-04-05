@@ -7,7 +7,7 @@ from click.testing import CliRunner
 import src.cli as cli_module
 from src.cli import main
 from src.config import reset_config
-from src.db import create_course, create_lecture, create_unit, init_db
+from src.db import add_segment, approve_card, create_card, create_course, create_lecture, create_unit, init_db
 
 
 @pytest.fixture(autouse=True)
@@ -207,6 +207,103 @@ class TestTranscribe:
 
         assert result.exit_code == 0
         assert "Stored 2 segments" in result.output
+
+
+class TestGenerate:
+    def test_generate_command_creates_cards(self, runner, tmp_path, monkeypatch):
+        database_path = tmp_path / "lecture2anki.db"
+        conn = sqlite3.connect(database_path)
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        lecture = create_lecture(conn, unit.id)
+        add_segment(conn, lecture.id, 0, 10, "Machine learning is a field.")
+        conn.close()
+
+        import json
+
+        def fake_llm(prompt: str) -> str:
+            return json.dumps([{"front": "What is ML?", "back": "A field.", "tags": ["ml"]}])
+
+        import src.card_generator as cg_module
+
+        monkeypatch.setattr(cg_module, "_call_ollama", fake_llm)
+
+        result = runner.invoke(
+            main,
+            ["--database-path", str(database_path), "generate", str(lecture.id)],
+        )
+
+        assert result.exit_code == 0
+        assert "Generated" in result.output
+        assert "cards for lecture" in result.output
+
+
+class TestSync:
+    def test_sync_command_reports_results(self, runner, tmp_path, monkeypatch):
+        database_path = tmp_path / "lecture2anki.db"
+        conn = sqlite3.connect(database_path)
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        lecture = create_lecture(conn, unit.id)
+        card = create_card(conn, lecture.id, "Q1", "A1", [])
+        approve_card(conn, card.id)
+        conn.close()
+
+        def fake_sync_lecture(conn, lecture_id):
+            return SimpleNamespace(synced=1, failed=0, errors=[])
+
+        import src.anki_client as anki_module
+
+        monkeypatch.setattr(anki_module, "sync_lecture", fake_sync_lecture)
+
+        result = runner.invoke(
+            main,
+            ["--database-path", str(database_path), "sync", str(lecture.id)],
+        )
+
+        assert result.exit_code == 0
+        assert "Synced 1 cards" in result.output
+
+
+class TestCards:
+    def test_cards_command_shows_cards(self, runner, tmp_path):
+        database_path = tmp_path / "lecture2anki.db"
+        conn = sqlite3.connect(database_path)
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        lecture = create_lecture(conn, unit.id)
+        create_card(conn, lecture.id, "What is ML?", "A field of study.", ["ml"])
+        conn.close()
+
+        result = runner.invoke(
+            main,
+            ["--database-path", str(database_path), "cards", str(lecture.id)],
+        )
+
+        assert result.exit_code == 0
+        assert "What is ML?" in result.output
+        assert "A field of study." in result.output
+        assert "[pending]" in result.output
+
+    def test_cards_command_empty(self, runner, tmp_path):
+        database_path = tmp_path / "lecture2anki.db"
+        conn = sqlite3.connect(database_path)
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        lecture = create_lecture(conn, unit.id)
+        conn.close()
+
+        result = runner.invoke(
+            main,
+            ["--database-path", str(database_path), "cards", str(lecture.id)],
+        )
+
+        assert result.exit_code == 0
+        assert "No cards found." in result.output
 
 
 class TestWeb:
