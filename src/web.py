@@ -456,6 +456,9 @@ def api_transcribe(lecture_id: int) -> dict[str, Any]:
 def api_segments(lecture_id: int) -> dict[str, Any]:
     conn = _connect()
     try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
         rows = conn.execute(
             "SELECT id, start_time, end_time, text "
             "FROM segments WHERE lecture_id = ? ORDER BY start_time",
@@ -513,6 +516,9 @@ def api_generate(lecture_id: int) -> dict[str, Any]:
 def api_cards(lecture_id: int) -> dict[str, Any]:
     conn = _connect()
     try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
         cards = get_cards_for_lecture(conn, lecture_id)
     finally:
         conn.close()
