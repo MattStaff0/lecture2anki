@@ -202,6 +202,10 @@ class TestSegments:
         assert resp.status_code == 200
         assert len(resp.json()["segments"]) == 2
 
+    def test_get_segments_not_found(self, client):
+        resp = client.get("/api/lectures/9999/segments")
+        assert resp.status_code == 404
+
 
 class TestGenerate:
     def test_generate_no_segments(self, client, seeded_db):
@@ -231,6 +235,10 @@ class TestCards:
         cards = resp.json()["cards"]
         assert len(cards) == 1
         assert cards[0]["status"] == "pending"
+
+    def test_get_cards_not_found(self, client):
+        resp = client.get("/api/lectures/9999/cards")
+        assert resp.status_code == 404
 
     def test_approve_card(self, client, seeded_db):
         course = create_course(seeded_db, "AI")
