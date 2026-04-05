@@ -116,6 +116,15 @@ lecture2anki record --course AI --unit "Midterm 2"
 # Transcription
 lecture2anki transcribe <lecture_id>
 
+# Card generation
+lecture2anki generate <lecture_id>   # Generate flashcards from transcript
+
+# Card review
+lecture2anki cards <lecture_id>      # Show cards with approval status
+
+# Anki sync
+lecture2anki sync <lecture_id>       # Sync approved cards to Anki
+
 # List lectures
 lecture2anki lectures
 lecture2anki lectures --course AI
@@ -125,7 +134,7 @@ lecture2anki web                     # Default: 127.0.0.1:8000
 lecture2anki web --port 3000         # Custom port
 ```
 
-Card generation, review, and Anki sync are currently available through the web UI.
+The full pipeline is available via both the CLI and the web UI.
 
 ## Configuration
 
@@ -186,7 +195,7 @@ lecture2anki/
 │   ├── web.py             # FastAPI web app + background jobs
 │   ├── web_static/        # HTML/CSS/JS frontend
 │   └── cli.py             # Click CLI
-├── tests/                 # Test suite (92 tests)
+├── tests/                 # Test suite (103 tests)
 ├── CLAUDE.md              # AI assistant context
 ├── .env.example           # Configuration template
 └── pyproject.toml         # Project config
