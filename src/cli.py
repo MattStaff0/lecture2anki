@@ -235,6 +235,65 @@ def transcribe_command(ctx: click.Context, lecture_id: int) -> None:
     click.echo(f"Stored {len(segments)} segments for lecture {lecture_id}")
 
 
+@main.command("generate")
+@click.argument("lecture_id", type=int)
+@click.pass_context
+def generate_command(ctx: click.Context, lecture_id: int) -> None:
+    """Generate flashcards from a transcribed lecture."""
+    from src.card_generator import generate_cards_for_lecture
+
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        cards = generate_cards_for_lecture(conn, lecture_id)
+    finally:
+        conn.close()
+
+    click.echo(f"Generated {len(cards)} cards for lecture {lecture_id}")
+
+
+@main.command("sync")
+@click.argument("lecture_id", type=int)
+@click.pass_context
+def sync_command(ctx: click.Context, lecture_id: int) -> None:
+    """Sync approved cards for a lecture to Anki."""
+    from src.anki_client import sync_lecture
+
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        result = sync_lecture(conn, lecture_id)
+    finally:
+        conn.close()
+
+    click.echo(f"Synced {result.synced} cards, {result.failed} failed")
+    for error in result.errors:
+        click.echo(f"  Error: {error}")
+
+
+@main.command("cards")
+@click.argument("lecture_id", type=int)
+@click.pass_context
+def cards_command(ctx: click.Context, lecture_id: int) -> None:
+    """Show cards for a lecture."""
+    from src.db import get_cards_for_lecture
+
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        cards = get_cards_for_lecture(conn, lecture_id)
+    finally:
+        conn.close()
+
+    if not cards:
+        click.echo("No cards found.")
+        return
+
+    for card in cards:
+        status = f"[{card.status}]"
+        if card.synced_to_anki:
+            status = "[synced]"
+        click.echo(f"{card.id}: {status} Q: {card.front}")
+        click.echo(f"         A: {card.back}")
+
+
 @main.command("web")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Host for the local web UI.")
 @click.option("--port", default=8000, show_default=True, type=int, help="Port for the local web UI.")
