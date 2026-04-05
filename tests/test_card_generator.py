@@ -87,6 +87,33 @@ class TestGenerateCardsForLecture:
         persisted = get_cards_for_lecture(db, lecture.id)
         assert len(persisted) == len(cards)
 
+    def test_regeneration_replaces_prior_cards(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        add_segment(db, lecture.id, 0, 10, "Some content about ML.")
+
+        def fake_v1(prompt: str) -> str:
+            return json.dumps([{"front": "V1 Q", "back": "V1 A", "tags": []}])
+
+        def fake_v2(prompt: str) -> str:
+            return json.dumps([{"front": "V2 Q", "back": "V2 A", "tags": []}])
+
+        # First generation
+        cards1 = generate_cards_for_lecture(db, lecture.id, llm=fake_v1)
+        assert len(cards1) == 1
+        assert cards1[0].front == "V1 Q"
+
+        # Second generation should replace
+        cards2 = generate_cards_for_lecture(db, lecture.id, llm=fake_v2)
+        assert len(cards2) == 1
+        assert cards2[0].front == "V2 Q"
+
+        # Only v2 cards remain
+        persisted = get_cards_for_lecture(db, lecture.id)
+        assert len(persisted) == 1
+        assert persisted[0].front == "V2 Q"
+
     def test_raises_on_no_segments(self, db):
         course = create_course(db, "AI")
         unit = create_unit(db, course.id, "Midterm 1")

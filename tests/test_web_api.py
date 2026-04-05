@@ -1,9 +1,7 @@
 """Tests for the FastAPI web API."""
 
-import json
 import sqlite3
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -298,3 +296,83 @@ class TestStaticFiles:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Lecture2Anki" in resp.text
+
+
+class TestBootstrapCardCounts:
+    def test_bootstrap_includes_card_counts(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id, title="Lec")
+        create_card(seeded_db, lecture.id, "Q1", "A1", [])
+        card2 = create_card(seeded_db, lecture.id, "Q2", "A2", [])
+        approve_card(seeded_db, card2.id)
+        seeded_db.close()
+
+        resp = client.get("/api/bootstrap")
+        lec = resp.json()["lectures"][0]
+        assert lec["card_count"] == 2
+        assert lec["approved_count"] == 1
+        assert lec["synced_count"] == 0
+
+
+class TestRegenerationReplacesCards:
+    def test_regeneration_deletes_prior_cards(self, client, seeded_db):
+        """generate_cards_for_lecture deletes old cards before creating new ones."""
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        add_segment(seeded_db, lecture.id, 0, 10, "Machine learning is about models.")
+        # Create a pre-existing card that should be replaced
+        create_card(seeded_db, lecture.id, "Old Q", "Old A", [])
+        seeded_db.close()
+
+        import json
+
+        def fake_llm(prompt: str) -> str:
+            return json.dumps([
+                {"front": "New Q1", "back": "New A1", "tags": ["ml"]},
+                {"front": "New Q2", "back": "New A2", "tags": []},
+            ])
+
+        with patch("src.card_generator._call_ollama", side_effect=fake_llm):
+            from src.card_generator import generate_cards_for_lecture
+            conn = sqlite3.connect(seeded_db.database if hasattr(seeded_db, 'database') else str(client.app))
+            # Use web module's connect to get to the test db
+            import src.web as web_mod
+            conn = sqlite3.connect(web_mod._database_path)
+            init_db(conn)
+            cards = generate_cards_for_lecture(conn, lecture.id, llm=fake_llm)
+            conn.close()
+
+        # Old card should be gone, only new cards remain
+        resp = client.get(f"/api/lectures/{lecture.id}/cards")
+        cards_data = resp.json()["cards"]
+        assert len(cards_data) == 2
+        fronts = [c["front"] for c in cards_data]
+        assert "Old Q" not in fronts
+        assert "New Q1" in fronts
+        assert "New Q2" in fronts
+
+
+class TestSyncViaAPI:
+    def test_sync_returns_job_id(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        card = create_card(seeded_db, lecture.id, "Q1", "A1", [])
+        approve_card(seeded_db, card.id)
+        seeded_db.close()
+
+        resp = client.post(f"/api/lectures/{lecture.id}/sync")
+        assert resp.status_code == 200
+        assert "job_id" in resp.json()
+
+    def test_sync_rejects_no_approved(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        create_card(seeded_db, lecture.id, "Q1", "A1", [])  # pending only
+        seeded_db.close()
+
+        resp = client.post(f"/api/lectures/{lecture.id}/sync")
+        assert resp.status_code == 400
