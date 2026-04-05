@@ -98,7 +98,9 @@ Open `http://127.0.0.1:8000` in your browser. From there you can:
 
 ## CLI Usage
 
-All of the above can also be done from the command line:
+The web UI is the primary way to run the full lecture-to-Anki workflow, including card review.
+The CLI is available for setup, course and unit management, recording, transcription, inspection,
+and optional direct generation and sync commands:
 
 ```bash
 # Setup
@@ -120,7 +122,7 @@ lecture2anki transcribe <lecture_id>
 lecture2anki generate <lecture_id>   # Generate flashcards from transcript
 
 # Card review
-lecture2anki cards <lecture_id>      # Show cards with approval status
+lecture2anki cards <lecture_id>      # Inspect generated cards and approval status
 
 # Anki sync
 lecture2anki sync <lecture_id>       # Sync approved cards to Anki
@@ -134,7 +136,8 @@ lecture2anki web                     # Default: 127.0.0.1:8000
 lecture2anki web --port 3000         # Custom port
 ```
 
-The full pipeline is available via both the CLI and the web UI.
+Approve/reject review happens in the browser UI. The CLI can inspect cards and run direct
+generation or sync commands, but the browser app is the primary interface for the full v1 flow.
 
 ## Configuration
 
