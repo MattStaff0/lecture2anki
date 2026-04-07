@@ -26,6 +26,7 @@ const elements = {
   recordStop: document.getElementById("record-stop"),
   uploadForm: document.getElementById("upload-form"),
   uploadAudio: document.getElementById("upload-audio"),
+  autoPipeline: document.getElementById("auto-pipeline"),
   lectureList: document.getElementById("lecture-list"),
   transcriptEmpty: document.getElementById("transcript-empty"),
   transcriptView: document.getElementById("transcript-view"),
@@ -97,6 +98,52 @@ function pollJob(jobId, onDone) {
   }, 1500);
 }
 
+function wrapStageError(stageName, error) {
+  const message = error instanceof Error ? error.message : String(error || "Job failed");
+  return new Error(`${stageName} failed: ${message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Shared lecture job helper
+// ---------------------------------------------------------------------------
+
+function runLectureJob(endpoint, lectureId, { manageBusy = true, stageName = "Job", startStatus = null } = {}) {
+  if (startStatus) setStatus(startStatus, "busy");
+
+  return new Promise((resolve, reject) => {
+    const finishBusy = () => {
+      if (!manageBusy) return;
+      state.busyLectures.delete(lectureId);
+      render();
+    };
+
+    const rejectWithStage = (error) => {
+      finishBusy();
+      reject(wrapStageError(stageName, error));
+    };
+
+    if (manageBusy) {
+      state.busyLectures.add(lectureId);
+      render();
+    }
+
+    requestJson(endpoint, { method: "POST" })
+      .then((resp) => {
+        pollJob(resp.job_id, async (err, job) => {
+          if (err) return rejectWithStage(err);
+          finishBusy();
+          try {
+            await loadBootstrap();
+            resolve(job);
+          } catch (loadErr) {
+            reject(loadErr);
+          }
+        });
+      })
+      .catch(rejectWithStage);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Bootstrap + rendering
 // ---------------------------------------------------------------------------
@@ -134,10 +181,13 @@ function renderCourses() {
     .map(
       (c) => `
         <article class="course-card">
-          <h3>${escapeHtml(c.name)}</h3>
+          <div class="course-card-head">
+            <h3>${escapeHtml(c.name)}</h3>
+            <button type="button" class="button-delete" data-delete="course" data-id="${c.id}" data-name="${escapeHtml(c.name)}" title="Delete course">Delete</button>
+          </div>
           <div class="unit-chip-row">
             ${c.units.length
-              ? c.units.map((u) => `<span class="unit-chip">${escapeHtml(u.name)} <strong>#${u.sort_order}</strong></span>`).join("")
+              ? c.units.map((u) => `<span class="unit-chip">${escapeHtml(u.name)} <strong>#${u.sort_order}</strong> <button type="button" class="chip-delete" data-delete="unit" data-id="${u.id}" data-name="${escapeHtml(u.name)}" title="Delete unit">&times;</button></span>`).join("")
               : '<span class="unit-chip">No units yet</span>'}
           </div>
         </article>`,
@@ -194,6 +244,8 @@ function renderLectures() {
               ${lec.card_count === 0 ? "disabled" : ""}>Review cards</button>
             <button type="button" data-action="sync" data-lecture-id="${lec.id}"
               ${lec.approved_count === 0 || lec.approved_count === lec.synced_count || busy ? "disabled" : ""}>Sync to Anki</button>
+            <button type="button" class="button-danger" data-action="delete" data-lecture-id="${lec.id}"
+              data-lecture-title="${escapeHtml(lec.title)}" ${busy ? "disabled" : ""}>Delete</button>
           </div>
         </article>`;
       },
@@ -208,7 +260,7 @@ function render() {
 }
 
 // ---------------------------------------------------------------------------
-// Course / Unit creation
+// Course / Unit creation + deletion
 // ---------------------------------------------------------------------------
 
 async function createCourse(event) {
@@ -240,6 +292,30 @@ async function createUnit(event) {
   elements.unitSortOrder.value = "0";
   await loadBootstrap();
   setStatus("Unit added");
+}
+
+async function deleteCourse(courseId, courseName) {
+  if (!confirm(`Delete course "${courseName}" and all its units, lectures, and cards?`)) return;
+  setStatus("Deleting course...", "busy");
+  await requestJson(`/api/courses/${courseId}`, { method: "DELETE" });
+  await loadBootstrap();
+  setStatus("Course deleted");
+}
+
+async function deleteUnit(unitId, unitName) {
+  if (!confirm(`Delete unit "${unitName}" and all its lectures and cards?`)) return;
+  setStatus("Deleting unit...", "busy");
+  await requestJson(`/api/units/${unitId}`, { method: "DELETE" });
+  await loadBootstrap();
+  setStatus("Unit deleted");
+}
+
+async function deleteLecture(lectureId, lectureTitle) {
+  if (!confirm(`Delete lecture "${lectureTitle}" and all its segments, cards, and recordings?`)) return;
+  setStatus("Deleting lecture...", "busy");
+  await requestJson(`/api/lectures/${lectureId}`, { method: "DELETE" });
+  await loadBootstrap();
+  setStatus("Lecture deleted");
 }
 
 // ---------------------------------------------------------------------------
@@ -288,35 +364,42 @@ async function uploadRecordedBlob(blob) {
     `lecture${fileExtensionForMimeType(blob.type || "audio/webm")}`,
     { type: blob.type || "audio/webm" },
   );
-  await uploadAudioFile(file, durationSeconds);
+  const lectureId = await uploadAudioFile(file, durationSeconds);
+  if (elements.autoPipeline.checked) {
+    runAutoPipeline(lectureId).catch(handleError);
+  } else {
+    setStatus("Lecture saved");
+  }
 }
 
 async function stopRecording() {
   if (!state.mediaRecorder) return;
   setStatus("Saving recording...", "busy");
 
+  const recorder = state.mediaRecorder;
+  const mimeType = recorder.mimeType || "audio/webm";
   const finished = new Promise((resolve) => {
-    state.mediaRecorder.addEventListener(
+    recorder.addEventListener(
       "stop",
-      async () => {
-        const blob = new Blob(state.audioChunks, { type: state.mediaRecorder.mimeType || "audio/webm" });
-        await uploadRecordedBlob(blob);
-        resolve();
-      },
+      () => resolve(new Blob(state.audioChunks, { type: mimeType })),
       { once: true },
     );
   });
 
-  state.mediaRecorder.stop();
+  recorder.stop();
   state.mediaStream.getTracks().forEach((t) => t.stop());
-  await finished;
 
-  state.mediaRecorder = null;
-  state.mediaStream = null;
-  state.audioChunks = [];
-  state.startedAt = null;
-  elements.recordStart.disabled = false;
-  elements.recordStop.disabled = true;
+  try {
+    const blob = await finished;
+    await uploadRecordedBlob(blob);
+  } finally {
+    state.mediaRecorder = null;
+    state.mediaStream = null;
+    state.audioChunks = [];
+    state.startedAt = null;
+    elements.recordStart.disabled = false;
+    elements.recordStop.disabled = true;
+  }
 }
 
 async function uploadAudioFile(file, durationSeconds = null) {
@@ -326,11 +409,12 @@ async function uploadAudioFile(file, durationSeconds = null) {
   if (durationSeconds !== null) formData.append("duration_seconds", String(durationSeconds));
   formData.append("audio", file, file.name);
 
-  await requestJson("/api/lectures/upload", { method: "POST", body: formData });
+  const result = await requestJson("/api/lectures/upload", { method: "POST", body: formData });
+  const lectureId = result.lecture.id;
   elements.recordingTitle.value = "";
   elements.uploadForm.reset();
   await loadBootstrap();
-  setStatus("Lecture saved");
+  return lectureId;
 }
 
 async function handleUpload(event) {
@@ -338,25 +422,58 @@ async function handleUpload(event) {
   const [file] = elements.uploadAudio.files;
   if (!file) throw new Error("Choose an audio file first.");
   setStatus("Uploading audio...", "busy");
-  await uploadAudioFile(file);
+  const lectureId = await uploadAudioFile(file);
+  if (elements.autoPipeline.checked) {
+    runAutoPipeline(lectureId).catch(handleError);
+  } else {
+    setStatus("Lecture saved");
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Transcription (background job)
+// Auto-pipeline orchestrator
+// ---------------------------------------------------------------------------
+
+async function runAutoPipeline(lectureId) {
+  state.busyLectures.add(lectureId);
+  render();
+
+  try {
+    setStatus("Auto-pipeline: transcribing...", "busy");
+    await runLectureJob(`/api/lectures/${lectureId}/transcribe`, lectureId, {
+      manageBusy: false,
+      stageName: "Transcription",
+    });
+
+    setStatus("Auto-pipeline: generating cards...", "busy");
+    await runLectureJob(`/api/lectures/${lectureId}/generate`, lectureId, {
+      manageBusy: false,
+      stageName: "Generation",
+    });
+
+    await showCards(lectureId);
+    setStatus("Cards ready for review");
+  } finally {
+    state.busyLectures.delete(lectureId);
+    render();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Transcription (manual)
 // ---------------------------------------------------------------------------
 
 async function transcribeLecture(lectureId) {
-  state.busyLectures.add(lectureId);
-  render();
-  setStatus(`Transcribing lecture ${lectureId}...`, "busy");
-  const resp = await requestJson(`/api/lectures/${lectureId}/transcribe`, { method: "POST" });
-  pollJob(resp.job_id, async (err) => {
-    state.busyLectures.delete(lectureId);
-    if (err) { render(); return handleError(err); }
-    await loadBootstrap();
+  try {
+    await runLectureJob(`/api/lectures/${lectureId}/transcribe`, lectureId, {
+      stageName: "Transcription",
+      startStatus: `Transcribing lecture ${lectureId}...`,
+    });
     await showTranscript(lectureId);
     setStatus("Transcription complete");
-  });
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -391,21 +508,20 @@ async function showTranscript(lectureId) {
 }
 
 // ---------------------------------------------------------------------------
-// Card generation (background job)
+// Card generation (manual)
 // ---------------------------------------------------------------------------
 
 async function generateCards(lectureId) {
-  state.busyLectures.add(lectureId);
-  render();
-  setStatus(`Generating cards for lecture ${lectureId}...`, "busy");
-  const resp = await requestJson(`/api/lectures/${lectureId}/generate`, { method: "POST" });
-  pollJob(resp.job_id, async (err) => {
-    state.busyLectures.delete(lectureId);
-    if (err) { render(); return handleError(err); }
-    await loadBootstrap();
+  try {
+    await runLectureJob(`/api/lectures/${lectureId}/generate`, lectureId, {
+      stageName: "Generation",
+      startStatus: `Generating cards for lecture ${lectureId}...`,
+    });
     await showCards(lectureId);
     setStatus("Card generation complete");
-  });
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +538,7 @@ async function showCards(lectureId) {
     elements.cardsEmpty.style.display = "block";
     elements.cardsView.innerHTML = "";
     elements.cardsEmpty.textContent = "No cards for this lecture yet.";
+    document.getElementById("cards-panel").scrollIntoView({ behavior: "smooth", block: "start" });
     setStatus("No cards");
     return;
   }
@@ -493,18 +610,17 @@ async function rejectCard(cardId) {
 // ---------------------------------------------------------------------------
 
 async function syncLecture(lectureId) {
-  state.busyLectures.add(lectureId);
-  render();
-  setStatus(`Syncing lecture ${lectureId} to Anki...`, "busy");
-  const resp = await requestJson(`/api/lectures/${lectureId}/sync`, { method: "POST" });
-  pollJob(resp.job_id, async (err, job) => {
-    state.busyLectures.delete(lectureId);
-    if (err) { render(); return handleError(err); }
-    await loadBootstrap();
+  try {
+    const job = await runLectureJob(`/api/lectures/${lectureId}/sync`, lectureId, {
+      stageName: "Sync",
+      startStatus: `Syncing lecture ${lectureId} to Anki...`,
+    });
     if (state.activeLectureId === lectureId) await showCards(lectureId);
     const r = job.result || {};
     setStatus(`Synced ${r.synced || 0} cards${r.failed ? `, ${r.failed} failed` : ""}`);
-  });
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -512,11 +628,28 @@ async function syncLecture(lectureId) {
 // ---------------------------------------------------------------------------
 
 function attachEvents() {
+  // Auto-pipeline toggle persistence
+  elements.autoPipeline.checked = localStorage.getItem("autoPipeline") !== "false";
+  elements.autoPipeline.addEventListener("change", () => {
+    localStorage.setItem("autoPipeline", elements.autoPipeline.checked);
+  });
+
   elements.courseForm.addEventListener("submit", (e) => createCourse(e).catch(handleError));
   elements.unitForm.addEventListener("submit", (e) => createUnit(e).catch(handleError));
   elements.recordStart.addEventListener("click", () => startRecording().catch(handleError));
   elements.recordStop.addEventListener("click", () => stopRecording().catch(handleError));
   elements.uploadForm.addEventListener("submit", (e) => handleUpload(e).catch(handleError));
+
+  elements.courseList.addEventListener("click", (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const deleteType = target.dataset.delete;
+    if (!deleteType) return;
+    const id = Number(target.dataset.id);
+    const name = target.dataset.name;
+    if (deleteType === "course") deleteCourse(id, name).catch(handleError);
+    if (deleteType === "unit") deleteUnit(id, name).catch(handleError);
+  });
 
   elements.lectureList.addEventListener("click", (e) => {
     const target = e.target;
@@ -529,6 +662,7 @@ function attachEvents() {
     if (action === "generate") generateCards(lectureId).catch(handleError);
     if (action === "cards") showCards(lectureId).catch(handleError);
     if (action === "sync") syncLecture(lectureId).catch(handleError);
+    if (action === "delete") deleteLecture(lectureId, target.dataset.lectureTitle).catch(handleError);
   });
 
   elements.cardsView.addEventListener("click", (e) => {

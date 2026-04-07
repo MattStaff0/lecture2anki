@@ -294,6 +294,46 @@ def cards_command(ctx: click.Context, lecture_id: int) -> None:
         click.echo(f"         A: {card.back}")
 
 
+@main.command("approve")
+@click.argument("card_ids", type=int, nargs=-1, required=True)
+@click.pass_context
+def approve_command(ctx: click.Context, card_ids: tuple[int, ...]) -> None:
+    """Approve one or more cards by ID."""
+    from src.db import approve_card, get_card_by_id
+
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        for card_id in card_ids:
+            card = get_card_by_id(conn, card_id)
+            if card is None:
+                click.echo(f"Card {card_id} not found, skipping.")
+                continue
+            approve_card(conn, card_id)
+            click.echo(f"Approved card {card_id}")
+    finally:
+        conn.close()
+
+
+@main.command("reject")
+@click.argument("card_ids", type=int, nargs=-1, required=True)
+@click.pass_context
+def reject_command(ctx: click.Context, card_ids: tuple[int, ...]) -> None:
+    """Reject (delete) one or more cards by ID."""
+    from src.db import delete_card, get_card_by_id
+
+    conn, _ = _connect(ctx.obj["database_path"])
+    try:
+        for card_id in card_ids:
+            card = get_card_by_id(conn, card_id)
+            if card is None:
+                click.echo(f"Card {card_id} not found, skipping.")
+                continue
+            delete_card(conn, card_id)
+            click.echo(f"Rejected card {card_id}")
+    finally:
+        conn.close()
+
+
 @main.command("web")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Host for the local web UI.")
 @click.option("--port", default=8000, show_default=True, type=int, help="Port for the local web UI.")

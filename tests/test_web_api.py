@@ -101,12 +101,15 @@ class TestCourses:
         resp = client.delete(f"/api/courses/{course_id}")
         assert resp.status_code == 200
 
-    def test_delete_course_with_units_fails(self, client):
+    def test_delete_course_cascades_units(self, client):
         resp = client.post("/api/courses", json={"name": "AI"})
         course_id = resp.json()["course"]["id"]
         client.post("/api/units", json={"name": "Mid", "course_id": course_id})
         resp = client.delete(f"/api/courses/{course_id}")
-        assert resp.status_code == 409
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+        bootstrap = client.get("/api/bootstrap").json()
+        assert all(c["name"] != "AI" for c in bootstrap["courses"])
 
 
 class TestUnits:

@@ -405,6 +405,67 @@ def _row_to_card(row: tuple) -> Card:
     )
 
 
+# --- Deletions (cascade) ---
+
+
+def _delete_recording_files(lecture_id: int) -> None:
+    """Remove audio recording files for a lecture from disk."""
+    from src.config import get_recordings_path
+
+    directory = get_recordings_path()
+    for path in directory.glob(f"lecture-{lecture_id}-*"):
+        if path.is_file():
+            path.unlink()
+
+
+def delete_lecture(conn: sqlite3.Connection, lecture_id: int) -> None:
+    """Delete a lecture and its segments, cards, and recording files."""
+    _delete_recording_files(lecture_id)
+    conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lecture_id,))
+    conn.execute("DELETE FROM segments WHERE lecture_id = ?", (lecture_id,))
+    conn.execute("DELETE FROM lectures WHERE id = ?", (lecture_id,))
+    conn.commit()
+
+
+def delete_unit(conn: sqlite3.Connection, unit_id: int) -> None:
+    """Delete a unit and all its lectures, segments, cards, and recordings."""
+    lecture_ids = [
+        r[0] for r in conn.execute(
+            "SELECT id FROM lectures WHERE unit_id = ?", (unit_id,)
+        ).fetchall()
+    ]
+    for lid in lecture_ids:
+        _delete_recording_files(lid)
+        conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lid,))
+        conn.execute("DELETE FROM segments WHERE lecture_id = ?", (lid,))
+    conn.execute("DELETE FROM lectures WHERE unit_id = ?", (unit_id,))
+    conn.execute("DELETE FROM units WHERE id = ?", (unit_id,))
+    conn.commit()
+
+
+def delete_course(conn: sqlite3.Connection, course_id: int) -> None:
+    """Delete a course and all its units, lectures, segments, cards, and recordings."""
+    unit_ids = [
+        r[0] for r in conn.execute(
+            "SELECT id FROM units WHERE course_id = ?", (course_id,)
+        ).fetchall()
+    ]
+    for uid in unit_ids:
+        lecture_ids = [
+            r[0] for r in conn.execute(
+                "SELECT id FROM lectures WHERE unit_id = ?", (uid,)
+            ).fetchall()
+        ]
+        for lid in lecture_ids:
+            _delete_recording_files(lid)
+            conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lid,))
+            conn.execute("DELETE FROM segments WHERE lecture_id = ?", (lid,))
+        conn.execute("DELETE FROM lectures WHERE unit_id = ?", (uid,))
+    conn.execute("DELETE FROM units WHERE course_id = ?", (course_id,))
+    conn.execute("DELETE FROM courses WHERE id = ?", (course_id,))
+    conn.commit()
+
+
 # --- Helpers ---
 
 

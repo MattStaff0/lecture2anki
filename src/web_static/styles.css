@@ -203,6 +203,31 @@ button:disabled {
   gap: 10px;
 }
 
+.auto-pipeline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  margin: 4px 0;
+}
+
+.auto-pipeline-toggle input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+  accent-color: var(--accent);
+}
+
+.auto-pipeline-toggle span {
+  font-size: 0.88rem;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .hint {
   margin: 0;
   color: var(--muted);
@@ -356,6 +381,51 @@ button:disabled {
 
 .button-danger:hover:not(:disabled) {
   background: #6e2b1f;
+}
+
+.button-delete {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+  background: transparent;
+  color: #913b2b;
+  border: 1px solid rgba(145, 59, 43, 0.3);
+}
+
+.button-delete:hover:not(:disabled) {
+  background: rgba(145, 59, 43, 0.1);
+  transform: none;
+}
+
+.course-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.course-card-head h3 {
+  margin: 0;
+}
+
+.chip-delete {
+  all: unset;
+  cursor: pointer;
+  margin-left: 4px;
+  font-size: 1rem;
+  line-height: 1;
+  color: #913b2b;
+  opacity: 0.6;
+  min-height: auto;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.chip-delete:hover {
+  opacity: 1;
+  transform: none;
+  background: none;
 }
 
 @media (max-width: 900px) {

@@ -45,6 +45,9 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+# FastAPI/uvicorn reload artifacts
+<fastapi.applications.FastAPI*
+
 # Project specific
 *.mp3
 *.wav

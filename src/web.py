@@ -20,6 +20,9 @@ from src.db import (
     create_course,
     create_unit,
     delete_card,
+    delete_course,
+    delete_lecture,
+    delete_unit,
     get_approved_unsynced_cards,
     get_card_by_id,
     get_cards_for_lecture,
@@ -254,13 +257,7 @@ def api_delete_course(course_id: int) -> dict[str, Any]:
         course = get_course_by_id(conn, course_id)
         if course is None:
             raise HTTPException(404, "Course not found.")
-        units = get_units_for_course(conn, course_id)
-        if units:
-            raise HTTPException(
-                409, "Cannot delete course with existing units. Delete units first."
-            )
-        conn.execute("DELETE FROM courses WHERE id = ?", (course_id,))
-        conn.commit()
+        delete_course(conn, course_id)
     finally:
         conn.close()
     return {"deleted": True}
@@ -326,15 +323,7 @@ def api_delete_unit(unit_id: int) -> dict[str, Any]:
         row = conn.execute("SELECT id FROM units WHERE id = ?", (unit_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "Unit not found.")
-        lectures = conn.execute(
-            "SELECT id FROM lectures WHERE unit_id = ?", (unit_id,)
-        ).fetchall()
-        if lectures:
-            raise HTTPException(
-                409, "Cannot delete unit with existing lectures."
-            )
-        conn.execute("DELETE FROM units WHERE id = ?", (unit_id,))
-        conn.commit()
+        delete_unit(conn, unit_id)
     finally:
         conn.close()
     return {"deleted": True}
@@ -419,6 +408,19 @@ def api_lecture_detail(lecture_id: int) -> dict[str, Any]:
             "card_count": card_count,
         }
     }
+
+
+@app.delete("/api/lectures/{lecture_id}")
+def api_delete_lecture(lecture_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+        delete_lecture(conn, lecture_id)
+    finally:
+        conn.close()
+    return {"deleted": True}
 
 
 # --- Transcription ---
@@ -642,4 +644,4 @@ def run_web_app(
 
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run("src.web:app", host=host, port=port, log_level="info")

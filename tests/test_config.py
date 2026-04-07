@@ -6,6 +6,8 @@ from src.config import Config
 class TestConfig:
     def test_load_defaults(self, monkeypatch, tmp_path):
         monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "lecture2anki.db"))
+        monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+        monkeypatch.delenv("WHISPER_MODEL", raising=False)
         monkeypatch.delenv("ANKI_ROOT_DECK", raising=False)
         monkeypatch.delenv("WHISPER_LANGUAGE", raising=False)
 
