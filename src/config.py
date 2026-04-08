@@ -31,8 +31,8 @@ class OllamaConfig:
     """Ollama LLM settings."""
 
     host: str = field(default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434"))
-    model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "phi3"))
-    context_size: int = field(default_factory=lambda: _get_int("OLLAMA_CONTEXT_SIZE", 2048))
+    model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3.5:4b"))
+    context_size: int = field(default_factory=lambda: _get_int("OLLAMA_CONTEXT_SIZE", 4096))
 
 
 @dataclass
@@ -56,10 +56,10 @@ class RecordingConfig:
 class CardGenerationConfig:
     """Card generation settings."""
 
-    chunk_target_words: int = field(default_factory=lambda: _get_int("CHUNK_TARGET_WORDS", 800))
-    chunk_max_words: int = field(default_factory=lambda: _get_int("CHUNK_MAX_WORDS", 1200))
-    cards_min_per_chunk: int = field(default_factory=lambda: _get_int("CARDS_MIN_PER_CHUNK", 3))
-    cards_max_per_chunk: int = field(default_factory=lambda: _get_int("CARDS_MAX_PER_CHUNK", 8))
+    chunk_target_words: int = field(default_factory=lambda: _get_int("CHUNK_TARGET_WORDS", 700))
+    chunk_max_words: int = field(default_factory=lambda: _get_int("CHUNK_MAX_WORDS", 900))
+    cards_min_per_chunk: int = field(default_factory=lambda: _get_int("CARDS_MIN_PER_CHUNK", 5))
+    cards_max_per_chunk: int = field(default_factory=lambda: _get_int("CARDS_MAX_PER_CHUNK", 10))
     dedup_threshold: float = field(
         default_factory=lambda: float(os.getenv("DEDUP_THRESHOLD", "0.75"))
     )

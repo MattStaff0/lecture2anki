@@ -22,40 +22,114 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 
 CARD_GENERATION_PROMPT = """\
-You are a professor creating study flashcards for students.
+You are a careful professor creating high-quality Anki study flashcards from a lecture transcript.
 
-Generate exactly {min_cards} to {max_cards} Anki flashcards from the lecture transcript below.
+Your job is to extract the most testable, concrete, high-yield facts a student would likely need for an exam.
 
-Card types to use:
-- Definitions: "What is X?" / "X is..."
-- Comparisons: "How does X differ from Y?"
-- Cause/Effect: "What happens when X?"
-- Formulas/Steps: "What are the steps for X?"
+Generate between {min_cards} and {max_cards} flashcards from the transcript below.
 
-Rules:
-- ONLY use facts stated in the transcript. Do NOT add external knowledge or make up definitions.
-- Every question must have a single, specific, factual answer.
-- Do NOT ask "Why is X important?" or "What is the significance of X?" — these are too vague.
+PRIORITIES:
+- Prefer facts that are likely to appear on quizzes, exams, or study guides.
+- Prioritize:
+  - definitions
+  - terminology
+  - distinctions and comparisons
+  - mechanisms
+  - cause/effect relationships
+  - formulas
+  - ordered steps or processes
+  - named concepts, models, systems, or methods
+- Ignore:
+  - filler
+  - false starts
+  - repeated points
+  - jokes
+  - anecdotes
+  - motivational comments
+  - broad commentary without a specific factual takeaway
+  - incomplete or unclear statements
+
+ALLOWED CARD TYPES:
+- Definition:
+  "What is X?"
+  "X is..."
+- Terminology:
+  "What does X stand for?"
+- Comparison:
+  "How does X differ from Y?"
+- Cause/Effect:
+  "What happens when X?"
+  "What causes X?"
+- Process/Steps:
+  "What are the steps in X?"
+  "What happens first in X?"
+- Formula/Rule:
+  "What is the formula for X?"
+  "What rule describes X?"
+
+STRICT RULES:
+- ONLY use facts explicitly stated in the transcript.
+- Do NOT add outside knowledge.
+- Do NOT infer missing textbook facts unless the transcript directly states them.
+- Do NOT make up definitions or fill in gaps.
+- Every card must have a single, specific, factual answer.
+- Do NOT create vague cards.
+- Do NOT ask:
+  - "Why is X important?"
+  - "What is the significance of X?"
+  - "What is the role of X?"
+  - "What should you know about X?"
+  - "Describe X broadly."
 - Do NOT create cards about opinions, anecdotes, or filler.
-- Keep answers to 1-2 sentences (under 30 words).
-- Ignore filler words, false starts, and incomplete sentences in the transcript.
-- Respond with ONLY a JSON array, no other text.
+- Do NOT create duplicate or near-duplicate cards.
+- Do NOT create cards whose answer is too broad or subjective.
+- If the transcript is noisy, mentally clean it before extracting facts.
+- If there are fewer than {min_cards} strong facts in this chunk, return fewer cards rather than weak cards.
 
-GOOD example:
-{{"front": "What does NFS stand for?", "back": "Network File System.", "tags": ["networking"]}}
+QUALITY BAR:
+A good card:
+- tests one idea
+- has one correct answer
+- is specific enough for retrieval practice
+- is concise and unambiguous
+- would help a student study efficiently
 
-BAD example (too vague, do not create cards like this):
-{{"front": "Why is NFS important?", "back": "It is important because it enables file sharing.", "tags": ["networking"]}}
+A bad card:
+- is vague
+- is open-ended
+- repeats another card
+- asks for an opinion
+- uses knowledge not stated in the transcript
+
+ANSWER RULES:
+- Keep each "back" under 30 words.
+- Prefer 1 sentence.
+- Use 2 short sentences only if necessary for clarity.
+- Use plain, direct wording.
+- Preserve technical accuracy.
+
+TAG RULES:
+- "tags" must be an array of 1 to 3 short lowercase topic tags.
+
+OUTPUT RULES:
+- Respond with ONLY a valid JSON array.
+- No markdown.
+- No code fences.
+- No explanation before or after the JSON.
+- Each item must contain exactly these keys:
+  - "front"
+  - "back"
+  - "tags"
+
+OUTPUT EXAMPLE:
+[
+  {{"front": "What does NFS stand for?", "back": "Network File System.", "tags": ["networking"]}},
+  {{"front": "How does SRAM differ from DRAM?", "back": "SRAM does not require refresh, while DRAM must be periodically refreshed.", "tags": ["memory", "hardware"]}}
+]
 
 --- TRANSCRIPT START ---
 {chunk_text}
 --- TRANSCRIPT END ---
-
-JSON array:
-[
-  {{"front": "question", "back": "answer", "tags": ["topic"]}},
-  {{"front": "question", "back": "answer", "tags": ["topic"]}}
-]
 """
 
 _VALIDATION_STOPWORDS = frozenset({
@@ -68,8 +142,18 @@ _VALIDATION_STOPWORDS = frozenset({
 })
 
 _VAGUE_PATTERNS = re.compile(
-    r"(?i)^(why is .+ important|what is the significance|what is the role|"
-    r"explain the role|explain the importance|how important)"
+    r"(?i)^("
+    r"why is .+ important|"
+    r"what is the significance|"
+    r"what is the role|"
+    r"explain the role|"
+    r"explain the importance|"
+    r"how important|"
+    r"why does .+ matter|"
+    r"what should you know about|"
+    r"describe .+ broadly|"
+    r"what is the main idea of"
+    r")"
 )
 
 
@@ -95,11 +179,22 @@ def _call_ollama(prompt: str) -> str:
             "Run `pip install ollama` to install it."
         )
     config = get_config()
-    response = ollama_client.generate(
-        model=config.ollama.model,
-        prompt=prompt,
-        options={"num_ctx": config.ollama.context_size},
-    )
+    generate_kwargs: dict[str, Any] = {
+        "model": config.ollama.model,
+        "prompt": prompt,
+        "options": {
+            "num_ctx": config.ollama.context_size,
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "repeat_penalty": 1.1,
+            "num_predict": 1200,
+        },
+    }
+
+    try:
+        response = ollama_client.generate(format="json", **generate_kwargs)
+    except TypeError:
+        response = ollama_client.generate(**generate_kwargs)
     return response["response"]
 
 
