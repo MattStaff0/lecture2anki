@@ -1,5 +1,5 @@
 from src.card_generator import RawCard
-from src.deduplicator import deduplicate_cards, normalize_text
+from src.deduplicator import deduplicate_cards, normalize_text, _extract_concept, _pick_winner
 
 
 class TestNormalizeText:
@@ -71,3 +71,56 @@ class TestDeduplicateCards:
         assert len(result) == 2
         fronts = {c.front for c in result}
         assert "What is RPC?" in fronts
+
+
+class TestExtractConcept:
+    def test_strips_what_is(self):
+        assert _extract_concept("What is NFS?") == "nfs"
+
+    def test_strips_define(self):
+        assert _extract_concept("Define NFS.") == "nfs"
+
+    def test_preserves_remaining_words(self):
+        result = _extract_concept("What does NFS stand for?")
+        assert "nfs" in result
+        assert "stand" in result
+
+    def test_different_questions_different_concepts(self):
+        c1 = _extract_concept("What is NFS?")
+        c2 = _extract_concept("What is RPC?")
+        assert c1 != c2
+
+
+class TestPickWinner:
+    def test_prefers_notes_over_transcript(self):
+        notes_card = RawCard(front="What is NFS?", back="Short.", tags=[], source_type="notes")
+        transcript_card = RawCard(front="What is NFS?", back="A much longer answer here.", tags=[], source_type="transcript")
+        assert _pick_winner(notes_card, transcript_card) == 0
+        assert _pick_winner(transcript_card, notes_card) == 1
+
+    def test_prefers_longer_answer_same_source(self):
+        short = RawCard(front="What is NFS?", back="NFS.", tags=[])
+        long = RawCard(front="What is NFS?", back="Network File System for sharing.", tags=[])
+        assert _pick_winner(short, long) == 1
+        assert _pick_winner(long, short) == 0
+
+
+class TestConceptAwareDedup:
+    def test_same_concept_different_wording_deduped(self):
+        c1 = RawCard(front="What is NFS?", back="Network File System for sharing files.", tags=[])
+        c2 = RawCard(front="Define NFS.", back="Network File System for file sharing.", tags=[])
+        result = deduplicate_cards([c1, c2])
+        assert len(result) == 1
+
+    def test_different_concepts_both_kept(self):
+        c1 = RawCard(front="What is NFS?", back="Network File System.", tags=[])
+        c2 = RawCard(front="How does NFS differ from SMB?", back="NFS is Unix, SMB is Windows.", tags=[])
+        result = deduplicate_cards([c1, c2])
+        assert len(result) == 2
+
+    def test_cross_source_prefers_notes(self):
+        transcript = RawCard(front="What is NFS?", back="Network File System.", tags=[], source_type="transcript")
+        notes = RawCard(front="What is NFS?", back="Network File System.", tags=[], source_type="notes")
+        result = deduplicate_cards([transcript, notes])
+        assert len(result) == 1
+        assert result[0].source_type == "notes"

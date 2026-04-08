@@ -11,7 +11,7 @@ from src.card_generator import (
     generate_cards_for_lecture,
 )
 from src.chunker import TranscriptChunk
-from src.db import add_segment, create_course, create_lecture, create_unit, get_cards_for_lecture, init_db
+from src.db import add_segment, create_course, create_lecture, create_unit, get_cards_for_lecture, init_db, update_lecture_notes
 
 
 @pytest.fixture
@@ -164,10 +164,65 @@ class TestGenerateCardsForLecture:
         # Two chunks produce same card, dedup should remove one
         assert len(cards) == 1
 
-    def test_raises_on_no_segments(self, db):
+    def test_raises_on_no_segments_and_no_notes(self, db):
         course = create_course(db, "AI")
         unit = create_unit(db, course.id, "Midterm 1")
         lecture = create_lecture(db, unit.id)
 
         with pytest.raises(ValueError, match="No transcript segments"):
             generate_cards_for_lecture(db, lecture.id)
+
+    def test_notes_only_generation(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        update_lecture_notes(db, lecture.id, "NFS is a network file system for sharing files across machines.")
+
+        def fake_llm(prompt: str) -> str:
+            return json.dumps([
+                {"front": "What is NFS?", "back": "A network file system for sharing files.", "tags": ["net"]},
+            ])
+
+        cards = generate_cards_for_lecture(db, lecture.id, llm=fake_llm)
+        assert len(cards) >= 1
+        persisted = get_cards_for_lecture(db, lecture.id)
+        assert len(persisted) == len(cards)
+
+    def test_combined_transcript_and_notes(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        add_segment(db, lecture.id, 0, 10, "Machine learning uses training data.")
+        update_lecture_notes(db, lecture.id, "NFS is a network file system for sharing files.")
+
+        call_count = [0]
+
+        def fake_llm(prompt: str) -> str:
+            call_count[0] += 1
+            if "machine learning" in prompt.lower():
+                return json.dumps([
+                    {"front": "What does machine learning use?", "back": "Training data.", "tags": ["ml"]},
+                ])
+            return json.dumps([
+                {"front": "What is NFS?", "back": "A network file system for sharing files.", "tags": ["net"]},
+            ])
+
+        cards = generate_cards_for_lecture(db, lecture.id, llm=fake_llm)
+        assert call_count[0] == 2  # one transcript chunk + one notes chunk
+        assert len(cards) == 2
+
+    def test_cross_source_dedup(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        add_segment(db, lecture.id, 0, 10, "NFS is a network file system for sharing files.")
+        update_lecture_notes(db, lecture.id, "NFS is a network file system for sharing files across machines.")
+
+        def fake_llm(prompt: str) -> str:
+            return json.dumps([
+                {"front": "What is NFS?", "back": "Network file system for sharing files.", "tags": ["net"]},
+            ])
+
+        cards = generate_cards_for_lecture(db, lecture.id, llm=fake_llm)
+        # Both sources produce the same card, dedup should collapse to 1
+        assert len(cards) == 1

@@ -33,12 +33,14 @@ from src.db import (
     get_job_run,
     get_jobs_for_lecture,
     get_latest_job_event,
+    get_lecture_notes,
     get_recent_jobs,
     get_unit_by_name,
     get_units_for_course,
     init_db,
     update_job_stage,
     update_job_status,
+    update_lecture_notes,
 )
 from src.recorder import save_uploaded_audio
 from src.transcriber import find_recording_for_lecture, transcribe_lecture
@@ -210,7 +212,8 @@ def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
         "(SELECT COUNT(*) FROM cards cd WHERE cd.lecture_id = l.id "
         " AND cd.status = 'approved') AS approved_count, "
         "(SELECT COUNT(*) FROM cards cd WHERE cd.lecture_id = l.id "
-        " AND cd.synced_to_anki = 1) AS synced_count "
+        " AND cd.synced_to_anki = 1) AS synced_count, "
+        "CASE WHEN LENGTH(TRIM(l.notes_text)) > 0 THEN 1 ELSE 0 END AS has_notes "
         "FROM lectures l "
         "JOIN units u ON l.unit_id = u.id "
         "JOIN courses c ON u.course_id = c.id "
@@ -268,6 +271,7 @@ def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
                 "approved_count": row[10],
                 "synced_count": row[11],
                 "has_recording": has_recording,
+                "has_notes": bool(row[12]),
                 "active_job": active_job_info,
                 "last_error": last_error,
             }
@@ -464,7 +468,7 @@ def api_lecture_detail(lecture_id: int) -> dict[str, Any]:
     try:
         row = conn.execute(
             "SELECT l.id, COALESCE(l.title, 'Untitled lecture'), l.recorded_at, "
-            "l.duration_seconds, u.name, c.name "
+            "l.duration_seconds, u.name, c.name, l.notes_text "
             "FROM lectures l JOIN units u ON l.unit_id = u.id "
             "JOIN courses c ON u.course_id = c.id WHERE l.id = ?",
             (lecture_id,),
@@ -489,8 +493,43 @@ def api_lecture_detail(lecture_id: int) -> dict[str, Any]:
             "course_name": row[5],
             "segment_count": segment_count,
             "card_count": card_count,
+            "notes_text": row[6] or "",
         }
     }
+
+
+@app.patch("/api/lectures/{lecture_id}/notes")
+def api_update_notes(lecture_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Save or clear notes for a lecture."""
+    notes_text = body.get("notes_text", "")
+    if not isinstance(notes_text, str):
+        raise HTTPException(400, "notes_text must be a string.")
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+        update_lecture_notes(conn, lecture_id, notes_text)
+    finally:
+        conn.close()
+    return {
+        "lecture_id": lecture_id,
+        "has_notes": bool(notes_text.strip()),
+    }
+
+
+@app.get("/api/lectures/{lecture_id}/notes")
+def api_get_notes(lecture_id: int) -> dict[str, Any]:
+    """Retrieve saved notes for a lecture."""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT id FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+        notes = get_lecture_notes(conn, lecture_id)
+    finally:
+        conn.close()
+    return {"lecture_id": lecture_id, "notes_text": notes}
 
 
 @app.delete("/api/lectures/{lecture_id}")
@@ -552,6 +591,7 @@ def api_lecture_status(lecture_id: int) -> dict[str, Any]:
 
         recent_jobs = get_jobs_for_lecture(conn, lecture_id, limit=5)
         jobs_out = [_serialize_job_run(conn, j) for j in recent_jobs]
+        has_notes = bool(get_lecture_notes(conn, lecture_id).strip())
     finally:
         conn.close()
 
@@ -563,6 +603,7 @@ def api_lecture_status(lecture_id: int) -> dict[str, Any]:
         "unit_name": row[4],
         "course_name": row[5],
         "has_recording": has_recording,
+        "has_notes": has_notes,
         "segment_count": segment_count,
         "card_count": card_count,
         "approved_count": approved_count,
@@ -645,8 +686,9 @@ def api_generate(lecture_id: int) -> dict[str, Any]:
         seg_count = conn.execute(
             "SELECT COUNT(*) FROM segments WHERE lecture_id = ?", (lecture_id,)
         ).fetchone()[0]
-        if seg_count == 0:
-            raise HTTPException(400, "No transcript segments. Transcribe first.")
+        has_notes = bool(get_lecture_notes(conn, lecture_id).strip())
+        if seg_count == 0 and not has_notes:
+            raise HTTPException(400, "No transcript segments or notes. Transcribe or add notes first.")
 
         job = create_job_run(conn, "generation", lecture_id)
         logger.info("Starting generation job %d for lecture %d", job.id, lecture_id)

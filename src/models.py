@@ -29,6 +29,7 @@ class Lecture:
     title: str | None
     recorded_at: datetime
     duration_seconds: float | None
+    notes_text: str = ""
 
 
 @dataclass

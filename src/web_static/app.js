@@ -13,6 +13,8 @@ const state = {
   expandedLogs: new Set(),
   // Expanded job event details: set of job IDs
   expandedJobEvents: new Set(),
+  // Expanded notes editors: set of lecture IDs
+  expandedNotes: new Set(),
   // Pagination
   segmentsAll: [],
   segmentsShown: 0,
@@ -315,14 +317,16 @@ function renderLectures() {
             <span class="lecture-chip">${escapeHtml(lec.recorded_at)}</span>
             <span class="lecture-chip">${escapeHtml(formatDuration(lec.duration_seconds))}</span>
             ${lectureStatusChips(lec).map((c) => `<span class="lecture-chip">${escapeHtml(c)}</span>`).join("")}
+            ${lec.has_notes ? '<span class="lecture-chip">notes saved</span>' : ""}
           </div>
           <div class="lecture-actions">
             <button type="button" data-action="transcribe" data-lecture-id="${lec.id}"
               ${!lec.has_recording || busy ? "disabled" : ""}>Transcribe</button>
             <button type="button" class="button-muted" data-action="segments" data-lecture-id="${lec.id}"
               ${lec.segment_count === 0 ? "disabled" : ""}>View transcript</button>
+            <button type="button" class="button-muted" data-action="toggle-notes" data-lecture-id="${lec.id}">Notes</button>
             <button type="button" data-action="generate" data-lecture-id="${lec.id}"
-              ${lec.segment_count === 0 || busy ? "disabled" : ""}>Generate cards</button>
+              ${(lec.segment_count === 0 && !lec.has_notes) || busy ? "disabled" : ""}>Generate cards</button>
             <button type="button" class="button-muted" data-action="cards" data-lecture-id="${lec.id}"
               ${lec.card_count === 0 ? "disabled" : ""}>Review cards</button>
             <button type="button" data-action="sync" data-lecture-id="${lec.id}"
@@ -333,6 +337,15 @@ function renderLectures() {
               data-lecture-title="${escapeHtml(lec.title)}" ${busy ? "disabled" : ""}>Delete</button>
           </div>
           ${expanded ? `<div class="job-event-log" id="job-log-${lec.id}"><div class="empty-state">Loading...</div></div>` : ""}
+          ${state.expandedNotes.has(lec.id) ? `
+            <div class="notes-editor" id="notes-editor-${lec.id}">
+              <textarea class="notes-textarea" id="notes-text-${lec.id}" placeholder="Paste lecture notes or slide text here..."
+                rows="8"></textarea>
+              <div class="notes-actions">
+                <button type="button" data-action="save-notes" data-lecture-id="${lec.id}">Save Notes</button>
+                <span class="notes-status" id="notes-status-${lec.id}"></span>
+              </div>
+            </div>` : ""}
         </article>`;
       },
     )
@@ -897,6 +910,22 @@ function attachEvents() {
       renderLectures();
       return;
     }
+    if (action === "toggle-notes" && lectureId) {
+      if (state.expandedNotes.has(lectureId)) {
+        state.expandedNotes.delete(lectureId);
+      } else {
+        state.expandedNotes.add(lectureId);
+      }
+      renderLectures();
+      if (state.expandedNotes.has(lectureId)) {
+        loadNotesForLecture(lectureId);
+      }
+      return;
+    }
+    if (action === "save-notes" && lectureId) {
+      saveNotesForLecture(lectureId).catch(handleError);
+      return;
+    }
 
     if (!action || !lectureId) return;
     if (action === "transcribe") transcribeLecture(lectureId).catch(handleError);
@@ -918,6 +947,47 @@ function attachEvents() {
     if (action === "approve") approveCard(cardId).catch(handleError);
     if (action === "reject") rejectCard(cardId).catch(handleError);
   });
+}
+
+async function loadNotesForLecture(lectureId) {
+  const textarea = document.getElementById(`notes-text-${lectureId}`);
+  if (!textarea) return;
+  try {
+    const data = await requestJson(`/api/lectures/${lectureId}/notes`);
+    textarea.value = data.notes_text || "";
+  } catch (err) {
+    console.error("Failed to load notes:", err);
+  }
+}
+
+async function saveNotesForLecture(lectureId) {
+  const textarea = document.getElementById(`notes-text-${lectureId}`);
+  const statusEl = document.getElementById(`notes-status-${lectureId}`);
+  if (!textarea) return;
+  const notesText = textarea.value;
+  try {
+    const result = await requestJson(`/api/lectures/${lectureId}/notes`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes_text: notesText }),
+    });
+    // Update local state
+    const lec = state.lectures.find((l) => l.id === lectureId);
+    if (lec) lec.has_notes = result.has_notes;
+    if (statusEl) {
+      statusEl.textContent = "Saved!";
+      setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 2000);
+    }
+    renderLectures();
+    // Re-load notes into the textarea since render rebuilds DOM
+    if (state.expandedNotes.has(lectureId)) {
+      const newTextarea = document.getElementById(`notes-text-${lectureId}`);
+      if (newTextarea) newTextarea.value = notesText;
+    }
+  } catch (err) {
+    if (statusEl) statusEl.textContent = "Save failed!";
+    throw err;
+  }
 }
 
 function handleError(error) {

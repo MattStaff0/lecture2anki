@@ -19,12 +19,14 @@ from src.db import (
     get_courses,
     get_deck_path_for_lecture,
     get_lecture_by_id,
+    get_lecture_notes,
     get_lectures_for_unit,
     get_segments_for_lecture,
     get_units_for_course,
     get_unsynced_cards,
     init_db,
     mark_card_synced,
+    update_lecture_notes,
 )
 
 
@@ -322,3 +324,43 @@ class TestHelpers:
 
         path = get_deck_path_for_lecture(db, lecture.id)
         assert path == "AI::Midterm 2"
+
+
+# --- Lecture Notes ---
+
+
+class TestLectureNotes:
+    def test_update_and_get_notes(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+
+        update_lecture_notes(db, lecture.id, "These are my notes.")
+        assert get_lecture_notes(db, lecture.id) == "These are my notes."
+
+    def test_notes_default_empty(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        assert get_lecture_notes(db, lecture.id) == ""
+
+    def test_clear_notes(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+
+        update_lecture_notes(db, lecture.id, "Some notes.")
+        update_lecture_notes(db, lecture.id, "")
+        assert get_lecture_notes(db, lecture.id) == ""
+
+    def test_notes_on_lecture_model(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+
+        update_lecture_notes(db, lecture.id, "Slide 1: NFS overview")
+        fetched = get_lecture_by_id(db, lecture.id)
+        assert fetched.notes_text == "Slide 1: NFS overview"
+
+    def test_get_notes_nonexistent_lecture(self, db):
+        assert get_lecture_notes(db, 999) == ""

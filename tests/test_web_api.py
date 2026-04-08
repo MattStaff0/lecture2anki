@@ -14,6 +14,7 @@ from src.db import (
     create_lecture,
     create_unit,
     init_db,
+    update_lecture_notes,
 )
 
 # Import after patching to avoid heavy dependency loads
@@ -379,3 +380,86 @@ class TestSyncViaAPI:
 
         resp = client.post(f"/api/lectures/{lecture.id}/sync")
         assert resp.status_code == 400
+
+
+class TestNotes:
+    def test_patch_notes(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        seeded_db.close()
+
+        resp = client.patch(
+            f"/api/lectures/{lecture.id}/notes",
+            json={"notes_text": "My lecture notes."},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["has_notes"] is True
+
+        # Verify via GET
+        resp = client.get(f"/api/lectures/{lecture.id}/notes")
+        assert resp.json()["notes_text"] == "My lecture notes."
+
+    def test_get_notes(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        update_lecture_notes(seeded_db, lecture.id, "Saved notes.")
+        seeded_db.close()
+
+        resp = client.get(f"/api/lectures/{lecture.id}/notes")
+        assert resp.status_code == 200
+        assert resp.json()["notes_text"] == "Saved notes."
+
+    def test_clear_notes(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        update_lecture_notes(seeded_db, lecture.id, "Some notes.")
+        seeded_db.close()
+
+        resp = client.patch(
+            f"/api/lectures/{lecture.id}/notes",
+            json={"notes_text": ""},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["has_notes"] is False
+
+    def test_patch_notes_not_found(self, client):
+        resp = client.patch(
+            "/api/lectures/9999/notes",
+            json={"notes_text": "x"},
+        )
+        assert resp.status_code == 404
+
+    def test_bootstrap_includes_has_notes(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        update_lecture_notes(seeded_db, lecture.id, "Notes here.")
+        seeded_db.close()
+
+        resp = client.get("/api/bootstrap")
+        lec = resp.json()["lectures"][0]
+        assert lec["has_notes"] is True
+
+    def test_bootstrap_has_notes_false_when_empty(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        create_lecture(seeded_db, unit.id)
+        seeded_db.close()
+
+        resp = client.get("/api/bootstrap")
+        lec = resp.json()["lectures"][0]
+        assert lec["has_notes"] is False
+
+    def test_generate_allowed_with_notes_only(self, client, seeded_db):
+        course = create_course(seeded_db, "AI")
+        unit = create_unit(seeded_db, course.id, "Midterm 1")
+        lecture = create_lecture(seeded_db, unit.id)
+        update_lecture_notes(seeded_db, lecture.id, "NFS is a network file system.")
+        seeded_db.close()
+
+        resp = client.post(f"/api/lectures/{lecture.id}/generate")
+        # Should not return 400 (no segments/notes) — it should start a job
+        assert resp.status_code != 400

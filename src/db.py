@@ -30,7 +30,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             unit_id INTEGER NOT NULL REFERENCES units(id),
             title TEXT,
             recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            duration_seconds REAL
+            duration_seconds REAL,
+            notes_text TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS segments (
@@ -75,6 +76,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+
+    # Idempotent migration for existing databases
+    try:
+        conn.execute("ALTER TABLE lectures ADD COLUMN notes_text TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
 
 def _parse_datetime(value: str | None) -> datetime:
@@ -204,45 +212,42 @@ def create_lecture(
     )
     conn.commit()
     row = conn.execute(
-        "SELECT id, unit_id, title, recorded_at, duration_seconds "
+        "SELECT id, unit_id, title, recorded_at, duration_seconds, notes_text "
         "FROM lectures WHERE id = ?",
         (cursor.lastrowid,),
     ).fetchone()
+    return _row_to_lecture(row)
+
+
+def _row_to_lecture(row: tuple) -> Lecture:
+    """Convert a lecture row to a Lecture object."""
     return Lecture(
         id=row[0], unit_id=row[1], title=row[2],
         recorded_at=_parse_datetime(row[3]), duration_seconds=row[4],
+        notes_text=row[5] if len(row) > 5 and row[5] else "",
     )
 
 
 def get_lectures_for_unit(conn: sqlite3.Connection, unit_id: int) -> list[Lecture]:
     """Get all lectures for a unit."""
     rows = conn.execute(
-        "SELECT id, unit_id, title, recorded_at, duration_seconds "
+        "SELECT id, unit_id, title, recorded_at, duration_seconds, notes_text "
         "FROM lectures WHERE unit_id = ? ORDER BY recorded_at",
         (unit_id,),
     ).fetchall()
-    return [
-        Lecture(
-            id=r[0], unit_id=r[1], title=r[2],
-            recorded_at=_parse_datetime(r[3]), duration_seconds=r[4],
-        )
-        for r in rows
-    ]
+    return [_row_to_lecture(r) for r in rows]
 
 
 def get_lecture_by_id(conn: sqlite3.Connection, lecture_id: int) -> Lecture | None:
     """Get a lecture by ID, or None if not found."""
     row = conn.execute(
-        "SELECT id, unit_id, title, recorded_at, duration_seconds "
+        "SELECT id, unit_id, title, recorded_at, duration_seconds, notes_text "
         "FROM lectures WHERE id = ?",
         (lecture_id,),
     ).fetchone()
     if row is None:
         return None
-    return Lecture(
-        id=row[0], unit_id=row[1], title=row[2],
-        recorded_at=_parse_datetime(row[3]), duration_seconds=row[4],
-    )
+    return _row_to_lecture(row)
 
 
 def update_lecture_duration(
@@ -254,6 +259,28 @@ def update_lecture_duration(
         (duration_seconds, lecture_id),
     )
     conn.commit()
+
+
+def update_lecture_notes(
+    conn: sqlite3.Connection, lecture_id: int, notes_text: str
+) -> None:
+    """Update the notes text for a lecture."""
+    conn.execute(
+        "UPDATE lectures SET notes_text = ? WHERE id = ?",
+        (notes_text, lecture_id),
+    )
+    conn.commit()
+
+
+def get_lecture_notes(conn: sqlite3.Connection, lecture_id: int) -> str:
+    """Get the notes text for a lecture."""
+    row = conn.execute(
+        "SELECT notes_text FROM lectures WHERE id = ?",
+        (lecture_id,),
+    ).fetchone()
+    if row is None:
+        return ""
+    return row[0] or ""
 
 
 # --- Segments ---

@@ -9,9 +9,9 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from src.chunker import TranscriptChunk, chunk_segments
+from src.chunker import TranscriptChunk, chunk_segments, chunk_text
 from src.config import get_config
-from src.db import create_card, delete_cards_for_lecture, get_segments_for_lecture
+from src.db import create_card, delete_cards_for_lecture, get_lecture_by_id, get_segments_for_lecture
 from src.models import Card
 
 try:
@@ -80,6 +80,7 @@ class RawCard:
     front: str
     back: str
     tags: list[str]
+    source_type: str = "transcript"  # "transcript" or "notes"
 
 
 LLMBackend = Callable[[str], str]
@@ -165,7 +166,7 @@ def generate_cards_for_chunk(
     chunk: TranscriptChunk,
     llm: LLMBackend | None = None,
 ) -> list[RawCard]:
-    """Generate flashcards from a single transcript chunk."""
+    """Generate flashcards from a single transcript or notes chunk."""
     config = get_config()
     prompt = CARD_GENERATION_PROMPT.format(
         chunk_text=chunk.text,
@@ -175,7 +176,11 @@ def generate_cards_for_chunk(
     backend = llm or _call_ollama
     response_text = backend(prompt)
     raw_cards = _parse_cards_from_response(response_text)
-    return _validate_raw_cards(raw_cards, chunk.text)
+    validated = _validate_raw_cards(raw_cards, chunk.text)
+    # Tag each card with the chunk's source type
+    for card in validated:
+        card.source_type = chunk.source_type
+    return validated
 
 
 def generate_cards_for_lecture(
@@ -195,19 +200,43 @@ def generate_cards_for_lecture(
             on_progress(stage, message, level)
 
     config = get_config()
+
+    # Load transcript segments
     _emit("loading_segments", "Loading transcript segments...")
     segments = get_segments_for_lecture(conn, lecture_id)
-    if not segments:
-        raise ValueError(f"No transcript segments for lecture {lecture_id}")
     _emit("loading_segments", f"Loaded {len(segments)} segments")
 
-    _emit("chunking", "Chunking transcript for LLM...")
-    chunks = chunk_segments(
-        segments,
-        target_words=config.card_generation.chunk_target_words,
-        max_words=config.card_generation.chunk_max_words,
-    )
-    _emit("chunking", f"Created {len(chunks)} chunks (model={config.ollama.model})")
+    # Load lecture notes
+    lecture = get_lecture_by_id(conn, lecture_id)
+    has_notes = bool(lecture and lecture.notes_text and lecture.notes_text.strip())
+
+    if not segments and not has_notes:
+        raise ValueError(f"No transcript segments or notes for lecture {lecture_id}")
+
+    # Build transcript chunks
+    chunks: list[TranscriptChunk] = []
+    if segments:
+        _emit("chunking", "Chunking transcript for LLM...")
+        transcript_chunks = chunk_segments(
+            segments,
+            target_words=config.card_generation.chunk_target_words,
+            max_words=config.card_generation.chunk_max_words,
+        )
+        chunks.extend(transcript_chunks)
+        _emit("chunking", f"Created {len(transcript_chunks)} transcript chunks")
+
+    # Build notes chunks
+    if has_notes:
+        _emit("chunking", "Chunking lecture notes...")
+        notes_chunks = chunk_text(
+            lecture.notes_text,
+            target_words=config.card_generation.chunk_target_words,
+            max_words=config.card_generation.chunk_max_words,
+        )
+        chunks.extend(notes_chunks)
+        _emit("chunking", f"Added {len(notes_chunks)} notes chunks")
+
+    _emit("chunking", f"Total: {len(chunks)} chunks (model={config.ollama.model})")
 
     delete_cards_for_lecture(conn, lecture_id)
 
@@ -215,7 +244,8 @@ def generate_cards_for_lecture(
 
     all_raw: list[RawCard] = []
     for i, chunk in enumerate(chunks, 1):
-        _emit("generating", f"Generating cards for chunk {i}/{len(chunks)}...")
+        source_label = chunk.source_type
+        _emit("generating", f"Generating cards for {source_label} chunk {i}/{len(chunks)}...")
         raw_cards = generate_cards_for_chunk(chunk, llm=llm)
         all_raw.extend(raw_cards)
         _emit("generating", f"Chunk {i}/{len(chunks)} done — {len(raw_cards)} cards")
