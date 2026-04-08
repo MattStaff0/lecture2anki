@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
-import uuid
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -14,26 +12,38 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.config import get_database_path
+from src.config import get_database_path, get_recordings_path
 from src.db import (
+    add_job_event,
     approve_card,
     create_course,
+    create_job_run,
     create_unit,
     delete_card,
     delete_course,
     delete_lecture,
     delete_unit,
+    get_active_job_for_lecture,
     get_approved_unsynced_cards,
     get_card_by_id,
     get_cards_for_lecture,
     get_course_by_id,
     get_courses,
+    get_job_events,
+    get_job_run,
+    get_jobs_for_lecture,
+    get_latest_job_event,
+    get_recent_jobs,
     get_unit_by_name,
     get_units_for_course,
     init_db,
+    update_job_stage,
+    update_job_status,
 )
 from src.recorder import save_uploaded_audio
 from src.transcriber import find_recording_for_lecture, transcribe_lecture
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 
@@ -63,57 +73,82 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _recordings_path() -> Path:
+    """Resolve the recordings directory for the active web database path."""
+    return get_recordings_path(_database_path)
+
+
 # ---------------------------------------------------------------------------
-# Background job registry
+# Background job runner (now backed by SQLite)
 # ---------------------------------------------------------------------------
 
-
-class JobStatus(str, Enum):
-    queued = "queued"
-    running = "running"
-    succeeded = "succeeded"
-    failed = "failed"
+# In-memory set of currently running job IDs (for thread safety)
+_running_jobs: set[int] = set()
+_running_lock = threading.Lock()
 
 
-@dataclass
-class Job:
-    id: str
-    type: str
-    status: JobStatus = JobStatus.queued
-    message: str = ""
-    result: dict[str, Any] = field(default_factory=dict)
+def _make_progress_callback(job_id: int):
+    """Create a progress callback that writes events to the database."""
+    def callback(stage: str, message: str, level: str = "info") -> None:
+        try:
+            conn = _connect()
+            try:
+                update_job_stage(conn, job_id, stage)
+                add_job_event(conn, job_id, stage, message, level)
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception("Failed to write job event for job %d", job_id)
+    return callback
 
 
-_jobs: dict[str, Job] = {}
-_jobs_lock = threading.Lock()
-
-
-def _create_job(job_type: str) -> Job:
-    job_id = uuid.uuid4().hex[:12]
-    job = Job(id=job_id, type=job_type)
-    with _jobs_lock:
-        _jobs[job_id] = job
-    return job
-
-
-def _get_job(job_id: str) -> Job | None:
-    with _jobs_lock:
-        return _jobs.get(job_id)
-
-
-def _run_in_background(job: Job, target: Any, args: tuple = ()) -> None:
-    """Run *target* in a daemon thread, updating job status on completion."""
+def _run_job_in_background(
+    job_id: int,
+    lecture_id: int,
+    target: Any,
+    args: tuple = (),
+) -> None:
+    """Run target in a daemon thread, updating durable job state."""
 
     def _wrapper() -> None:
-        job.status = JobStatus.running
+        conn = _connect()
+        try:
+            update_job_status(conn, job_id, "running", current_stage="starting")
+            add_job_event(conn, job_id, "starting", "Job started")
+        finally:
+            conn.close()
+
         try:
             result = target(*args)
-            job.result = result if isinstance(result, dict) else {}
-            job.status = JobStatus.succeeded
-            job.message = "Done"
+            details = result if isinstance(result, dict) else {}
+            conn = _connect()
+            try:
+                update_job_status(
+                    conn, job_id, "succeeded",
+                    current_stage="done",
+                    details_json=details,
+                )
+                add_job_event(conn, job_id, "done", "Job completed successfully")
+            finally:
+                conn.close()
         except Exception as exc:
-            job.status = JobStatus.failed
-            job.message = str(exc)
+            logger.exception("Job %d failed", job_id)
+            conn = _connect()
+            try:
+                update_job_status(
+                    conn, job_id, "failed",
+                    current_stage="error",
+                    error_message=str(exc),
+                )
+                add_job_event(conn, job_id, "error", f"Job failed: {exc}", "error")
+            finally:
+                conn.close()
+        finally:
+            with _running_lock:
+                _running_jobs.discard(job_id)
+
+    with _running_lock:
+        _running_jobs.add(job_id)
 
     t = threading.Thread(target=_wrapper, daemon=True)
     t.start()
@@ -132,6 +167,24 @@ def _audio_suffix(filename: str | None, content_type: str | None) -> str:
     if content_type and content_type in MIME_TO_SUFFIX:
         return MIME_TO_SUFFIX[content_type]
     return ".webm"
+
+
+def _serialize_job_run(conn, job) -> dict[str, Any]:
+    """Serialize a JobRun with its latest event for the API."""
+    latest = get_latest_job_event(conn, job.id)
+    return {
+        "id": job.id,
+        "job_type": job.job_type,
+        "lecture_id": job.lecture_id,
+        "status": job.status,
+        "current_stage": job.current_stage,
+        "started_at": str(job.started_at) if job.started_at else None,
+        "finished_at": str(job.finished_at) if job.finished_at else None,
+        "error_message": job.error_message,
+        "details": job.details_json,
+        "latest_event": latest.message if latest else None,
+        "latest_event_stage": latest.stage if latest else None,
+    }
 
 
 def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -168,10 +221,37 @@ def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
     for row in lecture_rows:
         lecture_id = row[0]
         try:
-            find_recording_for_lecture(lecture_id)
+            find_recording_for_lecture(lecture_id, recordings_dir=_recordings_path())
             has_recording = True
         except FileNotFoundError:
             has_recording = False
+
+        # Active job info
+        active_job = get_active_job_for_lecture(conn, lecture_id)
+        active_job_info = None
+        if active_job:
+            latest = get_latest_job_event(conn, active_job.id)
+            active_job_info = {
+                "job_id": active_job.id,
+                "job_type": active_job.job_type,
+                "status": active_job.status,
+                "current_stage": active_job.current_stage,
+                "latest_event": latest.message if latest else None,
+            }
+
+        # Last error from most recent failed job
+        last_failed = conn.execute(
+            "SELECT id, error_message FROM job_runs "
+            "WHERE lecture_id = ? AND status = 'failed' "
+            "ORDER BY id DESC LIMIT 1",
+            (lecture_id,),
+        ).fetchone()
+        last_error = None
+        if last_failed:
+            last_error = {
+                "job_id": last_failed[0],
+                "error_message": last_failed[1],
+            }
 
         lectures_out.append(
             {
@@ -188,6 +268,8 @@ def _serialize_bootstrap(conn: sqlite3.Connection) -> dict[str, Any]:
                 "approved_count": row[10],
                 "synced_count": row[11],
                 "has_recording": has_recording,
+                "active_job": active_job_info,
+                "last_error": last_error,
             }
         )
 
@@ -362,6 +444,7 @@ async def api_upload_lecture(
             audio_bytes=audio_bytes,
             suffix=suffix,
             title=clean_title,
+            recordings_dir=_recordings_path(),
             duration_seconds=duration_seconds,
         )
     finally:
@@ -423,6 +506,72 @@ def api_delete_lecture(lecture_id: int) -> dict[str, Any]:
     return {"deleted": True}
 
 
+# --- Lecture status ---
+
+
+@app.get("/api/lectures/{lecture_id}/status")
+def api_lecture_status(lecture_id: int) -> dict[str, Any]:
+    """Rich status summary for a single lecture."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT l.id, COALESCE(l.title, 'Untitled'), l.recorded_at, "
+            "l.duration_seconds, u.name, c.name "
+            "FROM lectures l JOIN units u ON l.unit_id = u.id "
+            "JOIN courses c ON u.course_id = c.id WHERE l.id = ?",
+            (lecture_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Lecture not found.")
+
+        try:
+            find_recording_for_lecture(lecture_id, recordings_dir=_recordings_path())
+            has_recording = True
+        except FileNotFoundError:
+            has_recording = False
+
+        segment_count = conn.execute(
+            "SELECT COUNT(*) FROM segments WHERE lecture_id = ?", (lecture_id,)
+        ).fetchone()[0]
+        card_count = conn.execute(
+            "SELECT COUNT(*) FROM cards WHERE lecture_id = ?", (lecture_id,)
+        ).fetchone()[0]
+        approved_count = conn.execute(
+            "SELECT COUNT(*) FROM cards WHERE lecture_id = ? AND status = 'approved'",
+            (lecture_id,),
+        ).fetchone()[0]
+        synced_count = conn.execute(
+            "SELECT COUNT(*) FROM cards WHERE lecture_id = ? AND synced_to_anki = 1",
+            (lecture_id,),
+        ).fetchone()[0]
+
+        active_job = get_active_job_for_lecture(conn, lecture_id)
+        active_job_info = None
+        if active_job:
+            active_job_info = _serialize_job_run(conn, active_job)
+
+        recent_jobs = get_jobs_for_lecture(conn, lecture_id, limit=5)
+        jobs_out = [_serialize_job_run(conn, j) for j in recent_jobs]
+    finally:
+        conn.close()
+
+    return {
+        "lecture_id": lecture_id,
+        "title": row[1],
+        "recorded_at": row[2],
+        "duration_seconds": row[3],
+        "unit_name": row[4],
+        "course_name": row[5],
+        "has_recording": has_recording,
+        "segment_count": segment_count,
+        "card_count": card_count,
+        "approved_count": approved_count,
+        "synced_count": synced_count,
+        "active_job": active_job_info,
+        "recent_jobs": jobs_out,
+    }
+
+
 # --- Transcription ---
 
 
@@ -434,23 +583,29 @@ def api_transcribe(lecture_id: int) -> dict[str, Any]:
         if row is None:
             raise HTTPException(404, "Lecture not found.")
         try:
-            find_recording_for_lecture(lecture_id)
+            find_recording_for_lecture(lecture_id, recordings_dir=_recordings_path())
         except FileNotFoundError:
             raise HTTPException(400, "No recording found for this lecture.")
+
+        job = create_job_run(conn, "transcription", lecture_id)
+        logger.info("Starting transcription job %d for lecture %d", job.id, lecture_id)
     finally:
         conn.close()
-
-    job = _create_job("transcription")
 
     def _do_transcribe() -> dict[str, Any]:
         c = _connect()
         try:
-            segs = transcribe_lecture(c, lecture_id)
+            on_progress = _make_progress_callback(job.id)
+            segs = transcribe_lecture(
+                c, lecture_id,
+                recordings_dir=_recordings_path(),
+                on_progress=on_progress,
+            )
             return {"lecture_id": lecture_id, "segment_count": len(segs)}
         finally:
             c.close()
 
-    _run_in_background(job, _do_transcribe)
+    _run_job_in_background(job.id, lecture_id, _do_transcribe)
     return {"job_id": job.id}
 
 
@@ -492,22 +647,27 @@ def api_generate(lecture_id: int) -> dict[str, Any]:
         ).fetchone()[0]
         if seg_count == 0:
             raise HTTPException(400, "No transcript segments. Transcribe first.")
+
+        job = create_job_run(conn, "generation", lecture_id)
+        logger.info("Starting generation job %d for lecture %d", job.id, lecture_id)
     finally:
         conn.close()
-
-    job = _create_job("generation")
 
     def _do_generate() -> dict[str, Any]:
         from src.card_generator import generate_cards_for_lecture
 
         c = _connect()
         try:
-            cards = generate_cards_for_lecture(c, lecture_id)
+            on_progress = _make_progress_callback(job.id)
+            cards = generate_cards_for_lecture(
+                c, lecture_id,
+                on_progress=on_progress,
+            )
             return {"lecture_id": lecture_id, "card_count": len(cards)}
         finally:
             c.close()
 
-    _run_in_background(job, _do_generate)
+    _run_job_in_background(job.id, lecture_id, _do_generate)
     return {"job_id": job.id}
 
 
@@ -579,22 +739,24 @@ def api_sync(lecture_id: int) -> dict[str, Any]:
         approved = get_approved_unsynced_cards(conn, lecture_id)
         if not approved:
             raise HTTPException(400, "No approved unsynced cards for this lecture.")
+
+        job = create_job_run(conn, "sync", lecture_id)
+        logger.info("Starting sync job %d for lecture %d", job.id, lecture_id)
     finally:
         conn.close()
-
-    job = _create_job("sync")
 
     def _do_sync() -> dict[str, Any]:
         from src.anki_client import sync_lecture
 
         c = _connect()
         try:
-            result = sync_lecture(c, lecture_id)
+            on_progress = _make_progress_callback(job.id)
+            result = sync_lecture(c, lecture_id, on_progress=on_progress)
             return {"synced": result.synced, "failed": result.failed, "errors": result.errors}
         finally:
             c.close()
 
-    _run_in_background(job, _do_sync)
+    _run_job_in_background(job.id, lecture_id, _do_sync)
     return {"job_id": job.id}
 
 
@@ -602,17 +764,52 @@ def api_sync(lecture_id: int) -> dict[str, Any]:
 
 
 @app.get("/api/jobs/{job_id}")
-def api_job_status(job_id: str) -> dict[str, Any]:
-    job = _get_job(job_id)
-    if job is None:
-        raise HTTPException(404, "Job not found.")
+def api_job_status(job_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        job = get_job_run(conn, job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found.")
+        return _serialize_job_run(conn, job)
+    finally:
+        conn.close()
+
+
+@app.get("/api/jobs/{job_id}/events")
+def api_job_events(job_id: int) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        job = get_job_run(conn, job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found.")
+        events = get_job_events(conn, job_id)
+    finally:
+        conn.close()
     return {
-        "job_id": job.id,
-        "type": job.type,
-        "status": job.status.value,
-        "message": job.message,
-        "result": job.result,
+        "job_id": job_id,
+        "events": [
+            {
+                "id": e.id,
+                "stage": e.stage,
+                "level": e.level,
+                "message": e.message,
+                "created_at": str(e.created_at),
+            }
+            for e in events
+        ],
     }
+
+
+@app.get("/api/jobs")
+def api_recent_jobs() -> dict[str, Any]:
+    conn = _connect()
+    try:
+        jobs = get_recent_jobs(conn, limit=20)
+        return {
+            "jobs": [_serialize_job_run(conn, j) for j in jobs],
+        }
+    finally:
+        conn.close()
 
 
 # --- Static files (must be last) ---

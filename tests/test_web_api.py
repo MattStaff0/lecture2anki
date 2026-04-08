@@ -290,7 +290,7 @@ class TestSync:
 
 class TestJobs:
     def test_job_not_found(self, client):
-        resp = client.get("/api/jobs/nonexistent")
+        resp = client.get("/api/jobs/9999")
         assert resp.status_code == 404
 
 
@@ -333,8 +333,8 @@ class TestRegenerationReplacesCards:
 
         def fake_llm(prompt: str) -> str:
             return json.dumps([
-                {"front": "New Q1", "back": "New A1", "tags": ["ml"]},
-                {"front": "New Q2", "back": "New A2", "tags": []},
+                {"front": "What is machine learning?", "back": "Machine learning is about models.", "tags": ["ml"]},
+                {"front": "What do models learn from?", "back": "Models learn from machine data.", "tags": []},
             ])
 
         with patch("src.card_generator._call_ollama", side_effect=fake_llm):
@@ -353,8 +353,8 @@ class TestRegenerationReplacesCards:
         assert len(cards_data) == 2
         fronts = [c["front"] for c in cards_data]
         assert "Old Q" not in fronts
-        assert "New Q1" in fronts
-        assert "New Q2" in fronts
+        assert "What is machine learning?" in fronts
+        assert "What do models learn from?" in fronts
 
 
 class TestSyncViaAPI:

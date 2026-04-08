@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from src.config import get_database_path
+from src.config import get_database_path, get_recordings_path
 from src.db import (
     create_course,
     create_unit,
@@ -28,6 +28,11 @@ def _connect(database_path: Path | None = None) -> tuple[sqlite3.Connection, Pat
     conn = sqlite3.connect(path)
     init_db(conn)
     return conn, path
+
+
+def _recordings_dir(database_path: Path | None) -> Path:
+    """Resolve the recordings directory for the active database path."""
+    return get_recordings_path(database_path)
 
 
 def _course_or_exit(conn: sqlite3.Connection, course_name: str):
@@ -212,6 +217,7 @@ def record_command(
             conn,
             unit.id,
             title=title,
+            recordings_dir=_recordings_dir(ctx.obj["database_path"]),
             duration_limit=duration_limit,
         )
     finally:
@@ -228,7 +234,11 @@ def transcribe_command(ctx: click.Context, lecture_id: int) -> None:
     """Transcribe a recorded lecture into timestamped segments."""
     conn, _ = _connect(ctx.obj["database_path"])
     try:
-        segments = transcribe_lecture(conn, lecture_id)
+        segments = transcribe_lecture(
+            conn,
+            lecture_id,
+            recordings_dir=_recordings_dir(ctx.obj["database_path"]),
+        )
     finally:
         conn.close()
 

@@ -60,6 +60,9 @@ class CardGenerationConfig:
     chunk_max_words: int = field(default_factory=lambda: _get_int("CHUNK_MAX_WORDS", 1200))
     cards_min_per_chunk: int = field(default_factory=lambda: _get_int("CARDS_MIN_PER_CHUNK", 3))
     cards_max_per_chunk: int = field(default_factory=lambda: _get_int("CARDS_MAX_PER_CHUNK", 8))
+    dedup_threshold: float = field(
+        default_factory=lambda: float(os.getenv("DEDUP_THRESHOLD", "0.75"))
+    )
 
 
 @dataclass
@@ -148,12 +151,13 @@ def get_database_path() -> Path:
     return get_config().storage.database_path
 
 
-def get_recordings_path() -> Path:
+def get_recordings_path(database_path: Path | None = None) -> Path:
     """Get the directory used for persisted recordings."""
     config = get_config()
     if config.storage.recordings_path is not None:
         return config.storage.recordings_path
-    return config.storage.database_path.parent / "recordings"
+    base_path = database_path or config.storage.database_path
+    return base_path.parent / "recordings"
 
 
 def get_deck_path(course_name: str, unit_name: str) -> str:

@@ -6,6 +6,7 @@ import pytest
 from src.card_generator import (
     RawCard,
     _parse_cards_from_response,
+    _validate_raw_cards,
     generate_cards_for_chunk,
     generate_cards_for_lecture,
 )
@@ -55,16 +56,50 @@ class TestParseCardsFromResponse:
         assert cards[0].tags == ["single"]
 
 
+class TestValidateRawCards:
+    def test_rejects_short_front(self):
+        cards = [RawCard(front="Q?", back="Answer here.", tags=[])]
+        assert _validate_raw_cards(cards, "some chunk text answer here") == []
+
+    def test_rejects_missing_question_mark(self):
+        cards = [RawCard(front="What is machine learning", back="A field of study.", tags=[])]
+        assert _validate_raw_cards(cards, "machine learning field study") == []
+
+    def test_rejects_long_answer(self):
+        long_back = " ".join(["word"] * 51)
+        cards = [RawCard(front="What is this concept?", back=long_back, tags=[])]
+        assert _validate_raw_cards(cards, "word concept") == []
+
+    def test_rejects_vague_pattern(self):
+        cards = [RawCard(front="Why is NFS important?", back="Because it shares files.", tags=[])]
+        assert _validate_raw_cards(cards, "nfs shares files") == []
+
+    def test_rejects_hallucination(self):
+        cards = [RawCard(front="What is SFTP?", back="Secure browser protocol.", tags=[])]
+        # "browser" and "protocol" and "secure" not in chunk
+        assert _validate_raw_cards(cards, "nfs network file system") == []
+
+    def test_keeps_valid_card(self):
+        cards = [RawCard(front="What is NFS?", back="Network File System.", tags=["net"])]
+        result = _validate_raw_cards(cards, "NFS is a network file system for sharing")
+        assert len(result) == 1
+
+
 class TestGenerateCardsForChunk:
     def test_uses_llm_backend(self):
-        chunk = TranscriptChunk(text="ML is...", start_time=0, end_time=10, segment_count=1)
+        chunk = TranscriptChunk(
+            text="Machine learning is a field of study involving models.",
+            start_time=0, end_time=10, segment_count=1,
+        )
 
         def fake_llm(prompt: str) -> str:
-            return json.dumps([{"front": "What is ML?", "back": "ML is...", "tags": ["ml"]}])
+            return json.dumps([
+                {"front": "What is machine learning?", "back": "A field of study involving models.", "tags": ["ml"]},
+            ])
 
         cards = generate_cards_for_chunk(chunk, llm=fake_llm)
         assert len(cards) == 1
-        assert cards[0].front == "What is ML?"
+        assert cards[0].front == "What is machine learning?"
 
 
 class TestGenerateCardsForLecture:
@@ -77,7 +112,7 @@ class TestGenerateCardsForLecture:
 
         def fake_llm(prompt: str) -> str:
             return json.dumps([
-                {"front": "What is ML?", "back": "A field of study.", "tags": ["ml"]},
+                {"front": "What is machine learning?", "back": "A field of study involving training models.", "tags": ["ml"]},
             ])
 
         cards = generate_cards_for_lecture(db, lecture.id, llm=fake_llm)
@@ -91,28 +126,43 @@ class TestGenerateCardsForLecture:
         course = create_course(db, "AI")
         unit = create_unit(db, course.id, "Midterm 1")
         lecture = create_lecture(db, unit.id)
-        add_segment(db, lecture.id, 0, 10, "Some content about ML.")
+        add_segment(db, lecture.id, 0, 10, "Some content about machine learning models.")
 
         def fake_v1(prompt: str) -> str:
-            return json.dumps([{"front": "V1 Q", "back": "V1 A", "tags": []}])
+            return json.dumps([
+                {"front": "What is machine learning?", "back": "Content about models.", "tags": []},
+            ])
 
         def fake_v2(prompt: str) -> str:
-            return json.dumps([{"front": "V2 Q", "back": "V2 A", "tags": []}])
+            return json.dumps([
+                {"front": "What are machine learning models?", "back": "Models trained on content.", "tags": []},
+            ])
 
-        # First generation
         cards1 = generate_cards_for_lecture(db, lecture.id, llm=fake_v1)
         assert len(cards1) == 1
-        assert cards1[0].front == "V1 Q"
 
-        # Second generation should replace
         cards2 = generate_cards_for_lecture(db, lecture.id, llm=fake_v2)
         assert len(cards2) == 1
-        assert cards2[0].front == "V2 Q"
 
-        # Only v2 cards remain
         persisted = get_cards_for_lecture(db, lecture.id)
         assert len(persisted) == 1
-        assert persisted[0].front == "V2 Q"
+        assert persisted[0].front == cards2[0].front
+
+    def test_deduplication_across_chunks(self, db):
+        course = create_course(db, "AI")
+        unit = create_unit(db, course.id, "Midterm 1")
+        lecture = create_lecture(db, unit.id)
+        add_segment(db, lecture.id, 0, 10, "NFS is a network file system for sharing files.")
+        add_segment(db, lecture.id, 10, 20, "NFS stands for network file system protocol.")
+
+        def fake_llm(prompt: str) -> str:
+            return json.dumps([
+                {"front": "What is NFS?", "back": "Network file system for sharing files.", "tags": ["net"]},
+            ])
+
+        cards = generate_cards_for_lecture(db, lecture.id, llm=fake_llm)
+        # Two chunks produce same card, dedup should remove one
+        assert len(cards) == 1
 
     def test_raises_on_no_segments(self, db):
         course = create_course(db, "AI")

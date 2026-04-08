@@ -1,8 +1,9 @@
 import json
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
-from src.models import Card, Course, Lecture, Segment, Unit
+from src.models import Card, Course, JobEvent, JobRun, Lecture, Segment, Unit
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -49,6 +50,28 @@ def init_db(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'pending',
             synced_to_anki BOOLEAN DEFAULT FALSE,
             anki_note_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS job_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_type TEXT NOT NULL,
+            lecture_id INTEGER NOT NULL REFERENCES lectures(id),
+            status TEXT NOT NULL DEFAULT 'queued',
+            current_stage TEXT NOT NULL DEFAULT '',
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            error_message TEXT,
+            details_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS job_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL REFERENCES job_runs(id),
+            stage TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT 'info',
+            message TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
@@ -405,22 +428,238 @@ def _row_to_card(row: tuple) -> Card:
     )
 
 
+# --- Job Runs ---
+
+
+_JOB_COLS = (
+    "id, job_type, lecture_id, status, current_stage, "
+    "started_at, finished_at, error_message, details_json, created_at"
+)
+
+
+def _row_to_job_run(row: tuple) -> JobRun:
+    """Convert a database row to a JobRun dataclass."""
+    return JobRun(
+        id=row[0],
+        job_type=row[1],
+        lecture_id=row[2],
+        status=row[3],
+        current_stage=row[4],
+        started_at=_parse_datetime(row[5]) if row[5] else None,
+        finished_at=_parse_datetime(row[6]) if row[6] else None,
+        error_message=row[7],
+        details_json=json.loads(row[8]) if row[8] else None,
+        created_at=_parse_datetime(row[9]),
+    )
+
+
+def create_job_run(
+    conn: sqlite3.Connection,
+    job_type: str,
+    lecture_id: int,
+) -> JobRun:
+    """Create a new job run in queued state."""
+    cursor = conn.execute(
+        "INSERT INTO job_runs (job_type, lecture_id, status, current_stage) "
+        "VALUES (?, ?, 'queued', '')",
+        (job_type, lecture_id),
+    )
+    conn.commit()
+    row = conn.execute(
+        f"SELECT {_JOB_COLS} FROM job_runs WHERE id = ?",
+        (cursor.lastrowid,),
+    ).fetchone()
+    return _row_to_job_run(row)
+
+
+def update_job_status(
+    conn: sqlite3.Connection,
+    job_id: int,
+    status: str,
+    current_stage: str = "",
+    error_message: str | None = None,
+    details_json: dict | None = None,
+) -> None:
+    """Update a job's status and optional fields."""
+    sets = ["status = ?", "current_stage = ?"]
+    params: list = [status, current_stage]
+
+    if status == "running":
+        sets.append("started_at = COALESCE(started_at, CURRENT_TIMESTAMP)")
+    if status in ("succeeded", "failed", "cancelled"):
+        sets.append("finished_at = CURRENT_TIMESTAMP")
+    if error_message is not None:
+        sets.append("error_message = ?")
+        params.append(error_message)
+    if details_json is not None:
+        sets.append("details_json = ?")
+        params.append(json.dumps(details_json))
+
+    params.append(job_id)
+    conn.execute(f"UPDATE job_runs SET {', '.join(sets)} WHERE id = ?", params)
+    conn.commit()
+
+
+def update_job_stage(
+    conn: sqlite3.Connection,
+    job_id: int,
+    stage: str,
+) -> None:
+    """Update only the current_stage of a running job."""
+    conn.execute(
+        "UPDATE job_runs SET current_stage = ? WHERE id = ?",
+        (stage, job_id),
+    )
+    conn.commit()
+
+
+def get_job_run(conn: sqlite3.Connection, job_id: int) -> JobRun | None:
+    """Get a job run by ID."""
+    row = conn.execute(
+        f"SELECT {_JOB_COLS} FROM job_runs WHERE id = ?", (job_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_job_run(row)
+
+
+def get_active_job_for_lecture(
+    conn: sqlite3.Connection, lecture_id: int
+) -> JobRun | None:
+    """Get the most recent running or queued job for a lecture."""
+    row = conn.execute(
+        f"SELECT {_JOB_COLS} FROM job_runs "
+        "WHERE lecture_id = ? AND status IN ('queued', 'running') "
+        "ORDER BY id DESC LIMIT 1",
+        (lecture_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_job_run(row)
+
+
+def get_recent_jobs(
+    conn: sqlite3.Connection, limit: int = 20
+) -> list[JobRun]:
+    """Get recent job runs across all lectures."""
+    rows = conn.execute(
+        f"SELECT {_JOB_COLS} FROM job_runs ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [_row_to_job_run(r) for r in rows]
+
+
+def get_jobs_for_lecture(
+    conn: sqlite3.Connection, lecture_id: int, limit: int = 10
+) -> list[JobRun]:
+    """Get recent job runs for a specific lecture."""
+    rows = conn.execute(
+        f"SELECT {_JOB_COLS} FROM job_runs "
+        "WHERE lecture_id = ? ORDER BY id DESC LIMIT ?",
+        (lecture_id, limit),
+    ).fetchall()
+    return [_row_to_job_run(r) for r in rows]
+
+
+# --- Job Events ---
+
+
+def add_job_event(
+    conn: sqlite3.Connection,
+    job_id: int,
+    stage: str,
+    message: str,
+    level: str = "info",
+) -> JobEvent:
+    """Add an event to a job run."""
+    cursor = conn.execute(
+        "INSERT INTO job_events (job_id, stage, level, message) "
+        "VALUES (?, ?, ?, ?)",
+        (job_id, stage, level, message),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, job_id, stage, level, message, created_at "
+        "FROM job_events WHERE id = ?",
+        (cursor.lastrowid,),
+    ).fetchone()
+    return JobEvent(
+        id=row[0], job_id=row[1], stage=row[2],
+        level=row[3], message=row[4], created_at=_parse_datetime(row[5]),
+    )
+
+
+def get_job_events(
+    conn: sqlite3.Connection, job_id: int
+) -> list[JobEvent]:
+    """Get all events for a job, ordered chronologically."""
+    rows = conn.execute(
+        "SELECT id, job_id, stage, level, message, created_at "
+        "FROM job_events WHERE job_id = ? ORDER BY id",
+        (job_id,),
+    ).fetchall()
+    return [
+        JobEvent(
+            id=r[0], job_id=r[1], stage=r[2],
+            level=r[3], message=r[4], created_at=_parse_datetime(r[5]),
+        )
+        for r in rows
+    ]
+
+
+def get_latest_job_event(
+    conn: sqlite3.Connection, job_id: int
+) -> JobEvent | None:
+    """Get the most recent event for a job."""
+    row = conn.execute(
+        "SELECT id, job_id, stage, level, message, created_at "
+        "FROM job_events WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return JobEvent(
+        id=row[0], job_id=row[1], stage=row[2],
+        level=row[3], message=row[4], created_at=_parse_datetime(row[5]),
+    )
+
+
 # --- Deletions (cascade) ---
 
 
-def _delete_recording_files(lecture_id: int) -> None:
+def _database_path_for_connection(conn: sqlite3.Connection) -> Path | None:
+    """Return the on-disk path for the main SQLite database when available."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    if row is None:
+        return None
+    db_path = row[2]
+    if not db_path:
+        return None
+    return Path(db_path)
+
+
+def _delete_recording_files(conn: sqlite3.Connection, lecture_id: int) -> None:
     """Remove audio recording files for a lecture from disk."""
     from src.config import get_recordings_path
 
-    directory = get_recordings_path()
+    directory = get_recordings_path(_database_path_for_connection(conn))
     for path in directory.glob(f"lecture-{lecture_id}-*"):
         if path.is_file():
             path.unlink()
 
 
 def delete_lecture(conn: sqlite3.Connection, lecture_id: int) -> None:
-    """Delete a lecture and its segments, cards, and recording files."""
-    _delete_recording_files(lecture_id)
+    """Delete a lecture and its segments, cards, jobs, and recording files."""
+    _delete_recording_files(conn, lecture_id)
+    # Delete job events for all jobs of this lecture
+    job_ids = [
+        r[0] for r in conn.execute(
+            "SELECT id FROM job_runs WHERE lecture_id = ?", (lecture_id,)
+        ).fetchall()
+    ]
+    for jid in job_ids:
+        conn.execute("DELETE FROM job_events WHERE job_id = ?", (jid,))
+    conn.execute("DELETE FROM job_runs WHERE lecture_id = ?", (lecture_id,))
     conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lecture_id,))
     conn.execute("DELETE FROM segments WHERE lecture_id = ?", (lecture_id,))
     conn.execute("DELETE FROM lectures WHERE id = ?", (lecture_id,))
@@ -435,7 +674,15 @@ def delete_unit(conn: sqlite3.Connection, unit_id: int) -> None:
         ).fetchall()
     ]
     for lid in lecture_ids:
-        _delete_recording_files(lid)
+        _delete_recording_files(conn, lid)
+        job_ids = [
+            r[0] for r in conn.execute(
+                "SELECT id FROM job_runs WHERE lecture_id = ?", (lid,)
+            ).fetchall()
+        ]
+        for jid in job_ids:
+            conn.execute("DELETE FROM job_events WHERE job_id = ?", (jid,))
+        conn.execute("DELETE FROM job_runs WHERE lecture_id = ?", (lid,))
         conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lid,))
         conn.execute("DELETE FROM segments WHERE lecture_id = ?", (lid,))
     conn.execute("DELETE FROM lectures WHERE unit_id = ?", (unit_id,))
@@ -457,7 +704,15 @@ def delete_course(conn: sqlite3.Connection, course_id: int) -> None:
             ).fetchall()
         ]
         for lid in lecture_ids:
-            _delete_recording_files(lid)
+            _delete_recording_files(conn, lid)
+            job_ids = [
+                r[0] for r in conn.execute(
+                    "SELECT id FROM job_runs WHERE lecture_id = ?", (lid,)
+                ).fetchall()
+            ]
+            for jid in job_ids:
+                conn.execute("DELETE FROM job_events WHERE job_id = ?", (jid,))
+            conn.execute("DELETE FROM job_runs WHERE lecture_id = ?", (lid,))
             conn.execute("DELETE FROM cards WHERE lecture_id = ?", (lid,))
             conn.execute("DELETE FROM segments WHERE lecture_id = ?", (lid,))
         conn.execute("DELETE FROM lectures WHERE unit_id = ?", (uid,))

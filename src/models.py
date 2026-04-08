@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -50,4 +50,32 @@ class Card:
     status: str  # "pending", "approved", "rejected"
     synced_to_anki: bool
     anki_note_id: int | None
+    created_at: datetime
+
+
+@dataclass
+class JobRun:
+    """A durable record of a background job."""
+
+    id: int
+    job_type: str  # "transcription", "generation", "sync"
+    lecture_id: int
+    status: str  # "queued", "running", "succeeded", "failed", "cancelled"
+    current_stage: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_message: str | None
+    details_json: dict | None
+    created_at: datetime
+
+
+@dataclass
+class JobEvent:
+    """A milestone or heartbeat event within a job."""
+
+    id: int
+    job_id: int
+    stage: str
+    level: str  # "info", "warning", "error"
+    message: str
     created_at: datetime

@@ -7,8 +7,19 @@ const state = {
   audioChunks: [],
   startedAt: null,
   activeCards: [],
-  busyLectures: new Set(),
+  // Job polling: map of job_id -> { lectureId, interval, type }
+  activePolls: {},
+  // Expanded event log panels: set of lecture IDs
+  expandedLogs: new Set(),
+  // Expanded job event details: set of job IDs
+  expandedJobEvents: new Set(),
+  // Pagination
+  segmentsAll: [],
+  segmentsShown: 0,
+  cardsShown: 0,
 };
+
+const PAGE_SIZE = 20;
 
 const elements = {
   statusPill: document.getElementById("status-pill"),
@@ -28,6 +39,8 @@ const elements = {
   uploadAudio: document.getElementById("upload-audio"),
   autoPipeline: document.getElementById("auto-pipeline"),
   lectureList: document.getElementById("lecture-list"),
+  activityPanel: document.getElementById("activity-panel"),
+  activityList: document.getElementById("activity-list"),
   transcriptEmpty: document.getElementById("transcript-empty"),
   transcriptView: document.getElementById("transcript-view"),
   cardsEmpty: document.getElementById("cards-empty"),
@@ -69,6 +82,15 @@ function formatUnitLabel(course, unit) {
   return `${course.name} / ${unit.name}`;
 }
 
+function timeAgo(dateStr) {
+  if (!dateStr) return "";
+  const utcStr = dateStr.endsWith("Z") ? dateStr : dateStr + "Z";
+  const diff = (Date.now() - new Date(utcStr).getTime()) / 1000;
+  if (diff < 60) return `${Math.round(diff)}s ago`;
+  if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
+  return `${Math.round(diff / 3600)}h ago`;
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const payload = await response.json().catch(() => ({}));
@@ -77,25 +99,51 @@ async function requestJson(url, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Job polling
+// Job polling (durable, SQLite-backed)
 // ---------------------------------------------------------------------------
 
-function pollJob(jobId, onDone) {
-  const interval = setInterval(async () => {
+function pollJob(jobId, lectureId, onDone) {
+  // Clear any existing poll for this job
+  if (state.activePolls[jobId]) {
+    clearInterval(state.activePolls[jobId].interval);
+  }
+
+  const intervalId = setInterval(async () => {
     try {
       const job = await requestJson(`/api/jobs/${jobId}`);
+
+      // Update the lecture's active job display
+      const lec = state.lectures.find((l) => l.id === lectureId);
+      if (lec) {
+        if (job.status === "running" || job.status === "queued") {
+          lec.active_job = {
+            job_id: jobId,
+            job_type: job.job_type,
+            status: job.status,
+            current_stage: job.current_stage,
+            latest_event: job.latest_event,
+          };
+          renderLectures();
+        }
+      }
+
       if (job.status === "succeeded") {
-        clearInterval(interval);
+        clearInterval(intervalId);
+        delete state.activePolls[jobId];
         onDone(null, job);
       } else if (job.status === "failed") {
-        clearInterval(interval);
-        onDone(new Error(job.message || "Job failed"), job);
+        clearInterval(intervalId);
+        delete state.activePolls[jobId];
+        onDone(new Error(job.error_message || job.latest_event || "Job failed"), job);
       }
     } catch (err) {
-      clearInterval(interval);
+      clearInterval(intervalId);
+      delete state.activePolls[jobId];
       onDone(err, null);
     }
-  }, 1500);
+  }, 2000);
+
+  state.activePolls[jobId] = { lectureId, interval: intervalId, type: "job" };
 }
 
 function wrapStageError(stageName, error) {
@@ -107,31 +155,32 @@ function wrapStageError(stageName, error) {
 // Shared lecture job helper
 // ---------------------------------------------------------------------------
 
-function runLectureJob(endpoint, lectureId, { manageBusy = true, stageName = "Job", startStatus = null } = {}) {
+function runLectureJob(endpoint, lectureId, { stageName = "Job", startStatus = null } = {}) {
   if (startStatus) setStatus(startStatus, "busy");
 
   return new Promise((resolve, reject) => {
-    const finishBusy = () => {
-      if (!manageBusy) return;
-      state.busyLectures.delete(lectureId);
-      render();
-    };
-
-    const rejectWithStage = (error) => {
-      finishBusy();
-      reject(wrapStageError(stageName, error));
-    };
-
-    if (manageBusy) {
-      state.busyLectures.add(lectureId);
-      render();
-    }
-
     requestJson(endpoint, { method: "POST" })
       .then((resp) => {
-        pollJob(resp.job_id, async (err, job) => {
-          if (err) return rejectWithStage(err);
-          finishBusy();
+        const jobId = resp.job_id;
+        // Update lecture to show active job immediately
+        const lec = state.lectures.find((l) => l.id === lectureId);
+        if (lec) {
+          lec.active_job = {
+            job_id: jobId,
+            job_type: stageName.toLowerCase(),
+            status: "queued",
+            current_stage: "",
+            latest_event: "Starting...",
+          };
+          renderLectures();
+        }
+
+        pollJob(jobId, lectureId, async (err, job) => {
+          if (err) {
+            reject(wrapStageError(stageName, err));
+            await loadBootstrap();
+            return;
+          }
           try {
             await loadBootstrap();
             resolve(job);
@@ -140,7 +189,7 @@ function runLectureJob(endpoint, lectureId, { manageBusy = true, stageName = "Jo
           }
         });
       })
-      .catch(rejectWithStage);
+      .catch((err) => reject(wrapStageError(stageName, err)));
   });
 }
 
@@ -212,6 +261,37 @@ function lectureStatusChips(lec) {
   return chips;
 }
 
+function renderActiveJobBanner(lec) {
+  if (!lec.active_job) return "";
+  const job = lec.active_job;
+  const typeLabel = job.job_type === "transcription" ? "Transcribing" :
+                    job.job_type === "generation" ? "Generating cards" :
+                    job.job_type === "sync" ? "Syncing to Anki" : job.job_type;
+  const event = job.latest_event ? escapeHtml(job.latest_event) : "Starting...";
+  return `
+    <div class="job-banner job-banner-active">
+      <div class="job-banner-header">
+        <span class="job-spinner"></span>
+        <strong>${typeLabel}</strong>
+        <span class="job-stage-chip">${escapeHtml(job.current_stage || "starting")}</span>
+      </div>
+      <div class="job-banner-detail">${event}</div>
+    </div>`;
+}
+
+function renderErrorBanner(lec) {
+  if (!lec.last_error) return "";
+  if (lec.active_job) return ""; // Don't show old error while a new job is running
+  return `
+    <div class="job-banner job-banner-error">
+      <div class="job-banner-header">
+        <strong>Last job failed</strong>
+        <button type="button" class="chip-delete" data-action="dismiss-error" data-lecture-id="${lec.id}" title="Dismiss">&times;</button>
+      </div>
+      <div class="job-banner-detail">${escapeHtml(lec.last_error.error_message || "Unknown error")}</div>
+    </div>`;
+}
+
 function renderLectures() {
   if (!state.lectures.length) {
     elements.lectureList.innerHTML =
@@ -221,13 +301,16 @@ function renderLectures() {
   elements.lectureList.innerHTML = state.lectures
     .map(
       (lec) => {
-        const busy = state.busyLectures.has(lec.id);
+        const busy = !!lec.active_job;
+        const expanded = state.expandedLogs.has(lec.id);
         return `
-        <article class="lecture-card${busy ? " lecture-busy" : ""}">
+        <article class="lecture-card${busy ? " lecture-busy-styled" : ""}">
           <div>
             <h3>${escapeHtml(lec.title)}</h3>
             <p>${escapeHtml(lec.course_name)} / ${escapeHtml(lec.unit_name)}</p>
           </div>
+          ${renderActiveJobBanner(lec)}
+          ${renderErrorBanner(lec)}
           <div class="lecture-meta">
             <span class="lecture-chip">${escapeHtml(lec.recorded_at)}</span>
             <span class="lecture-chip">${escapeHtml(formatDuration(lec.duration_seconds))}</span>
@@ -244,13 +327,90 @@ function renderLectures() {
               ${lec.card_count === 0 ? "disabled" : ""}>Review cards</button>
             <button type="button" data-action="sync" data-lecture-id="${lec.id}"
               ${lec.approved_count === 0 || lec.approved_count === lec.synced_count || busy ? "disabled" : ""}>Sync to Anki</button>
+            <button type="button" class="button-muted" data-action="toggle-log" data-lecture-id="${lec.id}">
+              ${expanded ? "Hide log" : "Show log"}</button>
             <button type="button" class="button-danger" data-action="delete" data-lecture-id="${lec.id}"
               data-lecture-title="${escapeHtml(lec.title)}" ${busy ? "disabled" : ""}>Delete</button>
           </div>
+          ${expanded ? `<div class="job-event-log" id="job-log-${lec.id}"><div class="empty-state">Loading...</div></div>` : ""}
         </article>`;
       },
     )
     .join("");
+
+  // Load event logs for expanded lectures
+  for (const lecId of state.expandedLogs) {
+    loadLectureJobLog(lecId);
+  }
+}
+
+async function loadLectureJobLog(lectureId) {
+  const container = document.getElementById(`job-log-${lectureId}`);
+  if (!container) return;
+  try {
+    const status = await requestJson(`/api/lectures/${lectureId}/status`);
+    if (!status.recent_jobs || !status.recent_jobs.length) {
+      container.innerHTML = '<div class="empty-state">No job history for this lecture.</div>';
+      return;
+    }
+    let html = "";
+    for (const job of status.recent_jobs) {
+      const statusClass = job.status === "succeeded" ? "job-status-ok" :
+                          job.status === "failed" ? "job-status-fail" :
+                          job.status === "running" ? "job-status-running" : "";
+      html += `<div class="job-log-entry">
+        <div class="job-log-header">
+          <span class="job-log-type">${escapeHtml(job.job_type)}</span>
+          <span class="job-log-status ${statusClass}">${escapeHtml(job.status)}</span>
+          ${job.started_at ? `<span class="job-log-time">${escapeHtml(timeAgo(job.started_at))}</span>` : ""}
+          <button type="button" class="chip-delete" data-action="show-events" data-job-id="${job.id}" title="Show events">details</button>
+        </div>
+        ${job.error_message ? `<div class="job-log-error">${escapeHtml(job.error_message)}</div>` : ""}
+        ${job.latest_event ? `<div class="job-log-detail">${escapeHtml(job.latest_event)}</div>` : ""}
+        <div class="job-events-container" id="job-events-${job.id}"></div>
+      </div>`;
+    }
+    container.innerHTML = html;
+    // Restore expanded job event details
+    for (const jobId of state.expandedJobEvents) {
+      loadJobEvents(jobId);
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function showJobEvents(jobId) {
+  const container = document.getElementById(`job-events-${jobId}`);
+  if (!container) return;
+  if (state.expandedJobEvents.has(jobId)) {
+    state.expandedJobEvents.delete(jobId);
+    container.innerHTML = "";
+    return;
+  }
+  state.expandedJobEvents.add(jobId);
+  await loadJobEvents(jobId);
+}
+
+async function loadJobEvents(jobId) {
+  const container = document.getElementById(`job-events-${jobId}`);
+  if (!container) return;
+  try {
+    const data = await requestJson(`/api/jobs/${jobId}/events`);
+    if (!data.events.length) {
+      container.innerHTML = '<div class="job-event-item">No events recorded.</div>';
+      return;
+    }
+    container.innerHTML = data.events.map((e) => {
+      const levelClass = e.level === "error" ? "event-error" : e.level === "warning" ? "event-warn" : "";
+      return `<div class="job-event-item ${levelClass}">
+        <span class="event-stage">${escapeHtml(e.stage)}</span>
+        <span class="event-msg">${escapeHtml(e.message)}</span>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    container.innerHTML = `<div class="job-event-item event-error">${escapeHtml(err.message)}</div>`;
+  }
 }
 
 function render() {
@@ -314,6 +474,7 @@ async function deleteLecture(lectureId, lectureTitle) {
   if (!confirm(`Delete lecture "${lectureTitle}" and all its segments, cards, and recordings?`)) return;
   setStatus("Deleting lecture...", "busy");
   await requestJson(`/api/lectures/${lectureId}`, { method: "DELETE" });
+  state.expandedLogs.delete(lectureId);
   await loadBootstrap();
   setStatus("Lecture deleted");
 }
@@ -435,27 +596,21 @@ async function handleUpload(event) {
 // ---------------------------------------------------------------------------
 
 async function runAutoPipeline(lectureId) {
-  state.busyLectures.add(lectureId);
-  render();
-
   try {
     setStatus("Auto-pipeline: transcribing...", "busy");
     await runLectureJob(`/api/lectures/${lectureId}/transcribe`, lectureId, {
-      manageBusy: false,
       stageName: "Transcription",
     });
 
     setStatus("Auto-pipeline: generating cards...", "busy");
     await runLectureJob(`/api/lectures/${lectureId}/generate`, lectureId, {
-      manageBusy: false,
       stageName: "Generation",
     });
 
     await showCards(lectureId);
     setStatus("Cards ready for review");
-  } finally {
-    state.busyLectures.delete(lectureId);
-    render();
+  } catch (err) {
+    handleError(err);
   }
 }
 
@@ -484,6 +639,8 @@ async function showTranscript(lectureId) {
   setStatus(`Loading transcript ${lectureId}...`, "busy");
   const payload = await requestJson(`/api/lectures/${lectureId}/segments`);
   state.activeLectureId = lectureId;
+  state.segmentsAll = payload.segments;
+  state.segmentsShown = 0;
 
   if (!payload.segments.length) {
     elements.transcriptEmpty.style.display = "block";
@@ -494,17 +651,40 @@ async function showTranscript(lectureId) {
   }
 
   elements.transcriptEmpty.style.display = "none";
+  elements.transcriptView.innerHTML = "";
+  showMoreSegments();
   document.querySelector(".transcript-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-  elements.transcriptView.innerHTML = payload.segments
-    .map(
-      (s) => `
-        <article class="segment-card">
-          <div class="segment-time">${s.start_time.toFixed(1)}s -> ${s.end_time.toFixed(1)}s</div>
-          <p>${escapeHtml(s.text)}</p>
-        </article>`,
-    )
-    .join("");
   setStatus(`Loaded ${payload.segments.length} segments`);
+}
+
+function showMoreSegments() {
+  const next = state.segmentsAll.slice(state.segmentsShown, state.segmentsShown + PAGE_SIZE);
+  state.segmentsShown += next.length;
+
+  // Remove existing "show more" button
+  const existing = elements.transcriptView.querySelector(".show-more-btn");
+  if (existing) existing.remove();
+
+  const fragment = document.createDocumentFragment();
+  for (const s of next) {
+    const article = document.createElement("article");
+    article.className = "segment-card";
+    article.innerHTML = `
+      <div class="segment-time">${s.start_time.toFixed(1)}s -> ${s.end_time.toFixed(1)}s</div>
+      <p>${escapeHtml(s.text)}</p>`;
+    fragment.appendChild(article);
+  }
+  elements.transcriptView.appendChild(fragment);
+
+  if (state.segmentsShown < state.segmentsAll.length) {
+    const remaining = state.segmentsAll.length - state.segmentsShown;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "show-more-btn button-muted";
+    btn.textContent = `Show more (${remaining} remaining)`;
+    btn.addEventListener("click", () => showMoreSegments());
+    elements.transcriptView.appendChild(btn);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +713,7 @@ async function showCards(lectureId) {
   const payload = await requestJson(`/api/lectures/${lectureId}/cards`);
   state.activeLectureId = lectureId;
   state.activeCards = payload.cards;
+  state.cardsShown = 0;
 
   if (!payload.cards.length) {
     elements.cardsEmpty.style.display = "block";
@@ -549,30 +730,70 @@ async function showCards(lectureId) {
   setStatus(`Loaded ${payload.cards.length} cards`);
 }
 
+function renderCardHtml(c) {
+  return `
+    <article class="card-review ${c.status === 'approved' ? 'card-approved' : ''} ${c.synced_to_anki ? 'card-synced' : ''}">
+      <div class="card-content">
+        <div class="card-front"><strong>Q:</strong> ${escapeHtml(c.front)}</div>
+        <div class="card-back"><strong>A:</strong> ${escapeHtml(c.back)}</div>
+        ${c.tags.length ? `<div class="card-tags">${c.tags.map((t) => `<span class="unit-chip">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+      </div>
+      <div class="card-actions">
+        <span class="card-status-label">${c.synced_to_anki ? "synced" : c.status}</span>
+        ${c.status === "pending" ? `
+          <button type="button" data-card-action="approve" data-card-id="${c.id}">Approve</button>
+          <button type="button" class="button-danger" data-card-action="reject" data-card-id="${c.id}">Reject</button>
+        ` : ""}
+      </div>
+    </article>`;
+}
+
 function renderCards() {
   const pendingCards = state.activeCards.filter((c) => c.status === "pending");
   const approveAllHtml = pendingCards.length > 1
     ? `<div class="cards-batch-actions"><button type="button" id="approve-all-btn">Approve all ${pendingCards.length} pending</button></div>`
     : "";
-  elements.cardsView.innerHTML = approveAllHtml + state.activeCards
-    .map(
-      (c) => `
-        <article class="card-review ${c.status === 'approved' ? 'card-approved' : ''} ${c.synced_to_anki ? 'card-synced' : ''}">
-          <div class="card-content">
-            <div class="card-front"><strong>Q:</strong> ${escapeHtml(c.front)}</div>
-            <div class="card-back"><strong>A:</strong> ${escapeHtml(c.back)}</div>
-            ${c.tags.length ? `<div class="card-tags">${c.tags.map((t) => `<span class="unit-chip">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
-          </div>
-          <div class="card-actions">
-            <span class="card-status-label">${c.synced_to_anki ? "synced" : c.status}</span>
-            ${c.status === "pending" ? `
-              <button type="button" data-card-action="approve" data-card-id="${c.id}">Approve</button>
-              <button type="button" class="button-danger" data-card-action="reject" data-card-id="${c.id}">Reject</button>
-            ` : ""}
-          </div>
-        </article>`,
-    )
-    .join("");
+
+  const visible = state.activeCards.slice(0, state.cardsShown || PAGE_SIZE);
+  state.cardsShown = visible.length;
+  const remaining = state.activeCards.length - state.cardsShown;
+
+  const showMoreHtml = remaining > 0
+    ? `<button type="button" class="show-more-btn button-muted" id="show-more-cards">Show more (${remaining} remaining)</button>`
+    : "";
+
+  elements.cardsView.innerHTML = approveAllHtml
+    + visible.map(renderCardHtml).join("")
+    + showMoreHtml;
+}
+
+function showMoreCards() {
+  const next = state.activeCards.slice(state.cardsShown, state.cardsShown + PAGE_SIZE);
+  state.cardsShown += next.length;
+
+  // Remove existing "show more" button
+  const existing = document.getElementById("show-more-cards");
+  if (existing) existing.remove();
+
+  const container = elements.cardsView;
+  const fragment = document.createDocumentFragment();
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = next.map(renderCardHtml).join("");
+  while (wrapper.firstChild) {
+    fragment.appendChild(wrapper.firstChild);
+  }
+  container.appendChild(fragment);
+
+  const remaining = state.activeCards.length - state.cardsShown;
+  if (remaining > 0) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "show-more-btn button-muted";
+    btn.id = "show-more-cards";
+    btn.textContent = `Show more (${remaining} remaining)`;
+    btn.addEventListener("click", () => showMoreCards());
+    container.appendChild(btn);
+  }
 }
 
 async function approveCard(cardId) {
@@ -616,7 +837,7 @@ async function syncLecture(lectureId) {
       startStatus: `Syncing lecture ${lectureId} to Anki...`,
     });
     if (state.activeLectureId === lectureId) await showCards(lectureId);
-    const r = job.result || {};
+    const r = job.result || job.details || {};
     setStatus(`Synced ${r.synced || 0} cards${r.failed ? `, ${r.failed} failed` : ""}`);
   } catch (err) {
     handleError(err);
@@ -656,6 +877,27 @@ function attachEvents() {
     if (!(target instanceof HTMLElement)) return;
     const action = target.dataset.action;
     const lectureId = Number(target.dataset.lectureId);
+    const jobId = Number(target.dataset.jobId);
+
+    if (action === "show-events" && jobId) {
+      showJobEvents(jobId).catch(handleError);
+      return;
+    }
+    if (action === "dismiss-error" && lectureId) {
+      const lec = state.lectures.find((l) => l.id === lectureId);
+      if (lec) { lec.last_error = null; renderLectures(); }
+      return;
+    }
+    if (action === "toggle-log" && lectureId) {
+      if (state.expandedLogs.has(lectureId)) {
+        state.expandedLogs.delete(lectureId);
+      } else {
+        state.expandedLogs.add(lectureId);
+      }
+      renderLectures();
+      return;
+    }
+
     if (!action || !lectureId) return;
     if (action === "transcribe") transcribeLecture(lectureId).catch(handleError);
     if (action === "segments") showTranscript(lectureId).catch(handleError);
@@ -669,6 +911,7 @@ function attachEvents() {
     const target = e.target;
     if (!(target instanceof HTMLElement)) return;
     if (target.id === "approve-all-btn") return approveAllPending().catch(handleError);
+    if (target.id === "show-more-cards") return showMoreCards();
     const action = target.dataset.cardAction;
     const cardId = Number(target.dataset.cardId);
     if (!action || !cardId) return;
@@ -682,7 +925,28 @@ function handleError(error) {
   setStatus(error.message || "Something went wrong", "error");
 }
 
+// ---------------------------------------------------------------------------
+// Init: check for active jobs on page load (recovery after restart)
+// ---------------------------------------------------------------------------
+
+async function recoverActiveJobs() {
+  for (const lec of state.lectures) {
+    if (lec.active_job && (lec.active_job.status === "running" || lec.active_job.status === "queued")) {
+      // Resume polling this job
+      pollJob(lec.active_job.job_id, lec.id, async (err, job) => {
+        await loadBootstrap();
+        if (err) {
+          setStatus(`Job failed: ${err.message}`, "error");
+        }
+      });
+    }
+  }
+}
+
 attachEvents();
 loadBootstrap()
-  .then(() => setStatus("Ready"))
+  .then(() => {
+    recoverActiveJobs();
+    setStatus("Ready");
+  })
   .catch(handleError);

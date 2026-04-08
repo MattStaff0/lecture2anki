@@ -8,7 +8,14 @@ from src.db import (
     get_segments_for_lecture,
     init_db,
 )
-from src.transcriber import TranscriptSegment, find_recording_for_lecture, transcribe_lecture
+import pytest
+
+from src.transcriber import (
+    TranscriptSegment,
+    delete_recordings_for_lecture,
+    find_recording_for_lecture,
+    transcribe_lecture,
+)
 
 
 class TestTranscriber:
@@ -21,6 +28,21 @@ class TestTranscriber:
         result = find_recording_for_lecture(7, recordings_dir=tmp_path)
 
         assert result == second
+
+    def test_delete_recordings_for_lecture_removes_matching_files(self, tmp_path):
+        first = tmp_path / "lecture-7-20260101-100000.wav"
+        second = tmp_path / "lecture-7-20260101-110000.webm"
+        other = tmp_path / "lecture-8-20260101-110000.webm"
+        first.write_bytes(b"1")
+        second.write_bytes(b"2")
+        other.write_bytes(b"3")
+
+        deleted = delete_recordings_for_lecture(7, recordings_dir=tmp_path)
+
+        assert deleted == 2
+        assert not first.exists()
+        assert not second.exists()
+        assert other.exists()
 
     def test_transcribe_lecture_replaces_existing_segments(self, tmp_path):
         conn = sqlite3.connect(":memory:")
@@ -55,3 +77,26 @@ class TestTranscriber:
             "First segment",
             "Second segment",
         ]
+        assert not recording.exists()
+
+    def test_transcribe_lecture_keeps_recording_when_transcriber_fails(self, tmp_path):
+        conn = sqlite3.connect(":memory:")
+        init_db(conn)
+        course = create_course(conn, "AI")
+        unit = create_unit(conn, course.id, "Midterm 1")
+        lecture = create_lecture(conn, unit.id, title="Intro to ML")
+        recording = tmp_path / f"lecture-{lecture.id}-20260101-100000.wav"
+        recording.write_bytes(b"audio")
+
+        def failing_transcriber(_audio_path):
+            raise RuntimeError("transcription failed")
+
+        with pytest.raises(RuntimeError, match="transcription failed"):
+            transcribe_lecture(
+                conn,
+                lecture.id,
+                transcriber=failing_transcriber,
+                recordings_dir=tmp_path,
+            )
+
+        assert recording.exists()

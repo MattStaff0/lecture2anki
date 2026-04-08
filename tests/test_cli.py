@@ -150,9 +150,16 @@ class TestRecord:
         unit = create_unit(conn, course.id, "Midterm 1")
         conn.close()
 
-        def fake_record_lecture(conn, unit_id, title=None, duration_limit=None):
+        def fake_record_lecture(
+            conn,
+            unit_id,
+            title=None,
+            recordings_dir=None,
+            duration_limit=None,
+        ):
             assert unit_id == unit.id
             assert title == "Intro to ML"
+            assert recordings_dir == database_path.parent / "recordings"
             assert duration_limit == 30.0
             return SimpleNamespace(
                 audio_path=tmp_path / "recordings" / "lecture-1.wav",
@@ -194,8 +201,9 @@ class TestTranscribe:
         lecture = create_lecture(conn, unit.id, title="Intro to ML")
         conn.close()
 
-        def fake_transcribe_lecture(conn, lecture_id):
+        def fake_transcribe_lecture(conn, lecture_id, recordings_dir=None):
             assert lecture_id == lecture.id
+            assert recordings_dir == database_path.parent / "recordings"
             return [SimpleNamespace(id=1), SimpleNamespace(id=2)]
 
         monkeypatch.setattr(cli_module, "transcribe_lecture", fake_transcribe_lecture)

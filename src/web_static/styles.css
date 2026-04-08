@@ -428,6 +428,193 @@ button:disabled {
   background: none;
 }
 
+/* --- Show more pagination --- */
+
+.show-more-btn {
+  width: 100%;
+  margin-top: 4px;
+}
+
+/* --- Job banners on lecture cards --- */
+
+.job-banner {
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.job-banner-active {
+  background: rgba(123, 91, 0, 0.08);
+  border: 1px solid rgba(123, 91, 0, 0.2);
+}
+
+.job-banner-error {
+  background: rgba(145, 59, 43, 0.08);
+  border: 1px solid rgba(145, 59, 43, 0.2);
+}
+
+.job-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.job-banner-header strong {
+  color: var(--warning);
+}
+
+.job-banner-error .job-banner-header strong {
+  color: #913b2b;
+}
+
+.job-banner-detail {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.job-stage-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(123, 91, 0, 0.12);
+  color: var(--warning);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.job-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(123, 91, 0, 0.2);
+  border-top-color: var(--warning);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.lecture-busy-styled {
+  border-color: rgba(123, 91, 0, 0.3);
+  background: rgba(255, 252, 247, 0.95);
+}
+
+/* --- Job event log --- */
+
+.job-event-log {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.job-log-entry {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  font-size: 0.85rem;
+}
+
+.job-log-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.job-log-type {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.job-log-status {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.job-status-ok {
+  background: rgba(47, 107, 67, 0.12);
+  color: var(--success);
+}
+
+.job-status-fail {
+  background: rgba(145, 59, 43, 0.12);
+  color: #913b2b;
+}
+
+.job-status-running {
+  background: rgba(123, 91, 0, 0.12);
+  color: var(--warning);
+}
+
+.job-log-time {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.job-log-error {
+  margin-top: 4px;
+  color: #913b2b;
+  font-size: 0.82rem;
+}
+
+.job-log-detail {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.job-events-container {
+  margin-top: 4px;
+}
+
+.job-event-item {
+  padding: 3px 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.job-event-item:last-child {
+  border-bottom: none;
+}
+
+.event-stage {
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-deep);
+  min-width: 100px;
+}
+
+.event-msg {
+  flex: 1;
+}
+
+.event-error {
+  color: #913b2b;
+}
+
+.event-warn {
+  color: var(--warning);
+}
+
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
